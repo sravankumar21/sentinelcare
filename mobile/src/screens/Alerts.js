@@ -10,18 +10,11 @@ export default function Alerts({ navigation }) {
   const [alerts, setAlerts] = useState([]);
   const [filter, setFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
-  const [doctors, setDoctors] = useState({});
 
   const refresh = useCallback(async () => {
     try {
-      const [a, d] = await Promise.all([
-        api.getAlerts(),
-        api.getDoctors().catch(() => ({ doctors: [] })),
-      ]);
+      const a = await api.getAlerts();
       setAlerts(a.alerts);
-      const map = {};
-      (d.doctors || []).forEach(doc => { map[doc.id] = doc.name; });
-      setDoctors(map);
     } catch (e) {}
   }, []);
 
@@ -60,9 +53,6 @@ export default function Alerts({ navigation }) {
         {filtered.map(a => {
           const pending = a.status === 'PENDING';
           const color = pending ? '#ef4444' : '#22c55e';
-          const doctorName = a.assigned_doctor_id && doctors[a.assigned_doctor_id]
-            ? doctors[a.assigned_doctor_id] : null;
-          const firstRec = a.recommendations?.[0]?.action || null;
           return (
             <TouchableOpacity key={a.alert_id} onPress={() => navigation.navigate('PatientDetail', { patientId: a.patient_id })}>
               <GlassCard style={[styles.alertCard, pending && styles.pendingCard]}>
@@ -70,18 +60,9 @@ export default function Alerts({ navigation }) {
                 <View style={{ flex: 1 }}>
                   <View style={styles.alertHeader}>
                     <Text style={styles.alertPatient}>{a.bed} · Ward {a.ward}</Text>
-                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                      {a.escalated && (
-                        <View style={styles.escalBadge}>
-                          <Text style={styles.escalBadgeText}>ESCALATED</Text>
-                        </View>
-                      )}
-                      <Text style={[styles.badge, { color, backgroundColor: `${color}22` }]}>{a.status}</Text>
-                    </View>
+                    <Text style={[styles.badge, { color, backgroundColor: `${color}22` }]}>{a.status}</Text>
                   </View>
                   <Text style={styles.alertMessage}>{a.message}</Text>
-                  {doctorName && <Text style={styles.doctorName}>Dr. {doctorName}</Text>}
-                  {firstRec && <Text style={styles.recSummary}>Recommended: {firstRec}</Text>}
                   <View style={styles.riskRow}>
                     <Text style={styles.riskText}>
                       Risk: {Math.round(a.risk_probability * 100)}%
@@ -127,8 +108,4 @@ const buildStyles = (colors) => StyleSheet.create({
   time: { fontSize: 11, color: colors.textMuted },
   ackBtn: { marginTop: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)', alignItems: 'center' },
   ackText: { color: '#22c55e', fontWeight: '600', fontSize: 13 },
-  escalBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, backgroundColor: 'rgba(239,68,68,0.15)' },
-  escalBadgeText: { color: '#ef4444', fontSize: 10, fontWeight: '700' },
-  doctorName: { fontSize: 12, color: colors.accentCyan, fontWeight: '600', marginTop: 4 },
-  recSummary: { fontSize: 11, color: colors.textMuted, marginTop: 2, fontStyle: 'italic' },
 });

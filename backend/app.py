@@ -269,72 +269,87 @@ def assign_doctor_to_alert(alert):
     return chosen['id']
 
 
+def _compute_risk_history(window):
+    """Compute real model risk at each observation in the window (multi-point
+    trajectory anchored to a real patient's actual vitals)."""
+    hist = []
+    if window is None or len(window) == 0:
+        return [0.05]
+    frame = pd.DataFrame(window) if isinstance(window, list) else window
+    frame = frame.sort_values('hour_from_admission').reset_index(drop=True)
+    for i in range(1, len(frame) + 1):
+        risk, _ = predict_risk(frame.iloc[:i])
+        hist.append(risk)
+    return hist
+
+
+def load_real_pool():
+    """Load the pre-computed real patient pool (real vitals + real model risk +
+    real deterioration outcome anchored at each patient's real pre-deterioration
+    window). The pool is built once by backend/build_demo_pool.py."""
+    pool_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'demo_pool.json')
+    if not os.path.exists(pool_path):
+        return []
+    try:
+        with open(pool_path) as f:
+            return json.load(f).get('patients', [])
+    except Exception:
+        return []
+
+
 def init_demo_patients():
-    df = pd.read_parquet(os.path.join(DATA_DIR, 'cleaned.parquet'))
-    np.random.seed(42)
-    # create deterministic demo patient assignments
-    num_demo = 16
-    demo_pids = list(range(1, num_demo + 1))
-    for i, pid in enumerate(demo_pids):
-        ward = WARD_NAMES[i % 4]
-        bed_num = 101 + i // 4
-        patient_df = df[df['patient_id'] == pid].sort_values('hour_from_admission')
-        if len(patient_df) == 0:
-            continue
-        # Use an EARLY, stable window so all demo patients start low/stable and
-        # the simulator can demonstrate deterioration from a low baseline.
-        window = patient_df.head(12).reset_index(drop=True)
-        latest = window.iloc[-1]
-        rec = {
-            key: latest[key] for key in [
-                'heart_rate', 'respiratory_rate', 'spo2_pct', 'temperature_c',
-                'systolic_bp', 'diastolic_bp', 'oxygen_flow', 'mobility_score',
-                'nurse_alert', 'age', 'gender', 'comorbidity_index', 'admission_type',
-                'oxygen_device', 'baseline_risk_score', 'los_hours',
-                'wbc_count', 'lactate', 'creatinine', 'crp_level', 'hemoglobin',
-                'sepsis_risk_score'
-            ]
-        }
-        for k, v in rec.items():
-            if pd.isna(v):
-                rec[k] = 0 if isinstance(latest[k], (int, float)) else 'none'
+    pool = load_real_pool()
+    db['patients'].clear()
+    db['simulator_state'].clear()
+    for w in WARDS:
+        WARDS[w] = []
 
-        # compute base risk via model on the early window
-        risk, status = predict_risk(window)
+    for rec in pool:
+        pid = int(rec['patient_id'])
+        ward = str(rec.get('ward', 'A'))
+        bed = str(rec.get('bed', 'A101'))
+        risk = float(rec.get('risk', 0.05))
+        status = get_risk_status(risk)
+        window = rec.get('window', [])
 
-        # raise a couple of patients slightly for earliest demo variety
-        if i in [3, 8]:
-            risk = max(risk, 0.52)
-            status = get_risk_status(risk)
-
-        obs_df = window.copy()
+        vitals = rec.get('vitals', {})
         db['patients'][pid] = {
-            'patient_id': int(pid),
-            'bed': f"{ward}{bed_num}",
+            'patient_id': pid,
+            'bed': bed,
             'ward': ward,
+            'hospital_id': int(rec.get('hospital_id', 1)),
+            'assigned_doctor_id': int(rec.get('doctor_id', 0)),
+            'event': int(rec.get('event', 0)),
+            'deteriorated': bool(rec.get('event', 0)),
+            'num_obs': int(rec.get('num_obs', len(window))),
+            'age': int(rec.get('age', 60)),
+            'gender': str(rec.get('gender', 'M')),
+            'admission_type': str(rec.get('admission_type', 'ED')),
+            'comorbidity_index': int(rec.get('comorbidity_index', 0)),
             'vitals': {
-                'heart_rate': float(rec['heart_rate']),
-                'respiratory_rate': float(rec['respiratory_rate']),
-                'spo2_pct': float(rec['spo2_pct']),
-                'temperature_c': float(rec['temperature_c']),
-                'systolic_bp': float(rec['systolic_bp']),
-                'diastolic_bp': float(rec['diastolic_bp']),
+                'heart_rate': float(vitals.get('heart_rate', 0)),
+                'respiratory_rate': float(vitals.get('respiratory_rate', 0)),
+                'spo2_pct': float(vitals.get('spo2_pct', 0)),
+                'temperature_c': float(vitals.get('temperature_c', 0)),
+                'systolic_bp': float(vitals.get('systolic_bp', 0)),
+                'diastolic_bp': float(vitals.get('diastolic_bp', 0)),
             },
-            'oxygen_device': str(rec['oxygen_device']),
-            'age': int(rec['age']) if not pd.isna(rec['age']) else 60,
-            'gender': str(rec['gender']) if not pd.isna(rec['gender']) else 'M',
-            'admission_type': str(rec['admission_type']) if not pd.isna(rec['admission_type']) else 'ED',
-            'risk_probability': round(risk, 4),
+            'risk_probability': risk,
             'risk_status': status,
             'last_update': datetime.now().isoformat(),
         }
+        # Real observation window for the simulator + real multi-point trajectory
+        history = _compute_risk_history(window)
+        if not history:
+            history = [risk]
         db['simulator_state'][pid] = {
-            'obs_df': obs_df.to_dict('records'),
-            'next_hour': int(latest['hour_from_admission']) + 1,
-            'risk_history': [risk],
+            'obs_df': window,
+            'next_hour': int(window[-1]['hour_from_admission']) + 1 if window else 1,
+            'risk_history': history,
             'deteriorating': False,
         }
-        WARDS[ward].append(pid)
+        if ward in WARDS:
+            WARDS[ward].append(pid)
 
     db['system_stats']['patients_monitored'] = len(db['patients'])
 
@@ -887,16 +902,16 @@ async def simulate_reset(patient_id: int):
     if not p:
         raise HTTPException(status_code=404, detail="Patient not found")
     state = db['simulator_state'][patient_id]
-    # reset to original early stable window from cleaned data
-    df = pd.read_parquet(os.path.join(DATA_DIR, 'cleaned.parquet'))
-    patient_df = df[df['patient_id'] == patient_id].sort_values('hour_from_admission')
-    window = patient_df.head(12).reset_index(drop=True)
-    latest = window.iloc[-1]
-    state['obs_df'] = window.to_dict('records')
-    state['next_hour'] = int(latest['hour_from_admission']) + 1
+    # reset to the patient's REAL window from the pool (true vitals + true risk)
+    pool = load_real_pool()
+    rec = next((r for r in pool if int(r['patient_id']) == int(patient_id)), None)
+    window = (rec or {}).get('window', state['obs_df'])
+    latest = window[-1] if window else {}
+    state['obs_df'] = window
+    state['next_hour'] = int(latest.get('hour_from_admission', 0)) + 1
     state['deteriorating'] = False
-    risk, status = predict_risk(window)
-    state['risk_history'] = [risk]
+    risk, status = predict_risk(pd.DataFrame(window)) if window else (0.05, 'STABLE')
+    state['risk_history'] = _compute_risk_history(window)
     p['risk_probability'] = risk
     p['risk_status'] = status
     p['vitals'] = {
