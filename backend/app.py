@@ -29,6 +29,10 @@ db = {
     'alert_counter': 0,
     'simulator_state': {},
     'devices': {},  # device_token -> {platform, last_seen}
+    'hospitals': [],
+    'current_hospital_id': None,
+    'doctors': [],
+    'escalation_log': [],
     'system_stats': {
         'observations_processed': 0,
         'alerts_generated': 0,
@@ -36,6 +40,9 @@ db = {
         'start_time': datetime.now().isoformat()
     }
 }
+
+ESCALATION_CRITICAL_LIMIT = 3  # when >= this many CRITICAL patients, escalate to more doctors
+PER_DOCTOR_CRITICAL_LIMIT = 2  # max CRITICAL patients one doctor handles before overload
 
 model = None
 feature_cols = None
@@ -156,6 +163,112 @@ WARDS = {'A': [], 'B': [], 'C': [], 'ICU': []}
 WARD_NAMES = ['A', 'B', 'C', 'ICU']
 
 
+HOSPITAL_DATA = [
+    {"id": 1, "name": "Gandhi Hospital", "location": "Hyderabad", "wards": ["A", "B", "ICU"]},
+    {"id": 2, "name": "Apollo Jubilee Hills", "location": "Hyderabad", "wards": ["A", "B", "C", "ICU"]},
+    {"id": 3, "name": "City Care Polyclinic", "location": "Secunderabad", "wards": ["C", "ICU"]},
+]
+
+DOCTOR_DATA = [
+    {"id": 1, "name": "Dr. Meera Reddy", "role": "Senior Intensivist", "specialties": ["ICU", "sepsis"], "on_duty": True},
+    {"id": 2, "name": "Dr. Arjun Nair", "role": "Critical Care Fellow", "specialties": ["ICU", "cardiology"], "on_duty": True},
+    {"id": 3, "name": "Dr. Sana Iqbal", "role": "ER Physician", "specialties": ["ED", "trauma"], "on_duty": True},
+    {"id": 4, "name": "Dr. Vikram Rao", "role": "Pulmonologist", "specialties": ["respiratory"], "on_duty": True},
+    {"id": 5, "name": "Dr. Priya Kulkarni", "role": "Internist", "specialties": ["general", "diabetes"], "on_duty": True},
+]
+
+
+def seed_hospitals_doctors():
+    db['hospitals'] = [dict(h) for h in HOSPITAL_DATA]
+    db['doctors'] = [dict(d) for d in DOCTOR_DATA]
+    # assign each patient to a hospital (129/130 default to hospital 1; vary a few)
+    for pid in db['patients']:
+        p = db['patients'][pid]
+        p['hospital_id'] = 1
+        p['hospital_name'] = "Gandhi Hospital"
+        p['assigned_doctor_id'] = None
+        p['notes'] = []
+    db['current_hospital_id'] = 1
+
+
+def recommend_actions(vitals):
+    """Rule-based clinical action recommendations from the current vitals/labs."""
+    recommendations = []
+    spo2 = float(vitals.get('spo2_pct', 100))
+    hr = float(vitals.get('heart_rate', 75))
+    rr = float(vitals.get('respiratory_rate', 16))
+    sbp = float(vitals.get('systolic_bp', 120))
+    temp = float(vitals.get('temperature_c', 37))
+    lactate = float(vitals.get('lactate', 1.0))
+    wbc = float(vitals.get('wbc_count', 8))
+    crp = float(vitals.get('crp_level', 5))
+
+    if spo2 < 92:
+        recommendations.append({"action": "Administer supplemental O2; consider escalation to HFNC/NIV", "priority": "HIGH", "rationale": f"SpO2 {spo2:.0f}% below target"})
+    if hr > 110:
+        recommendations.append({"action": "Review for tachycardia; assess hydration and pain", "priority": "MEDIUM", "rationale": f"Heart rate {hr:.0f} bpm"})
+    if rr > 24:
+        recommendations.append({"action": "Evaluate respiratory distress; measure ABG", "priority": "HIGH", "rationale": f"Respiratory rate {rr:.0f}/min"})
+    if sbp < 90:
+        recommendations.append({"action": "Initiate hypotension protocol; consider fluids/pressors", "priority": "CRITICAL", "rationale": f"SBP {sbp:.0f} mmHg"})
+    if temp >= 38.0:
+        recommendations.append({"action": "Start fever workup; assess for infection and cultures", "priority": "MEDIUM", "rationale": f"Temperature {temp:.1f}°C"})
+    if lactate > 2.0:
+        recommendations.append({"action": "Sepsis screen; measure repeat lactate and begin early-goal therapy", "priority": "HIGH", "rationale": f"Lactate {lactate:.1f} mmol/L"})
+    if wbc > 12 or crp > 50:
+        recommendations.append({"action": "Evaluate infection burden; review antibiotic coverage", "priority": "MEDIUM", "rationale": f"WBC {wbc:.0f} / CRP {crp:.0f}"})
+    if not recommendations:
+        recommendations.append({"action": "Continue routine monitoring per protocol", "priority": "LOW", "rationale": "Vitals within target"})
+    return recommendations
+
+
+def alert_recommendations(alert):
+    return recommend_actions(alert.get('vitals_snapshot', {}))
+
+
+def compute_doctor_load():
+    """Return per-doctor active (PENDING) critical alert load and escalation status."""
+    critical_patients = set()
+    pending = [a for a in db['alerts'] if a['status'] == 'PENDING']
+    for a in pending:
+        if a['risk_probability'] >= 0.75:
+            critical_patients.add(a['patient_id'])
+    num_critical = len(critical_patients)
+    needs_escalation = num_critical > ESCALATION_CRITICAL_LIMIT
+
+    # assign each critical patient to the least-loaded on-duty doctor
+    workload = {d['id']: 0 for d in db['doctors'] if d['on_duty']}
+    assignments = {}
+    for pid in sorted(critical_patients, key=lambda x: -db['patients'][x]['risk_probability']):
+        if not workload:
+            break
+        did = min(workload, key=workload.get)
+        workload[did] += 1
+        assignments[pid] = did
+
+    overloaded = [did for did, load in workload.items() if load >= PER_DOCTOR_CRITICAL_LIMIT]
+    escalated = needs_escalation or bool(overloaded)
+    return num_critical, assignments, escalated, overloaded, workload
+
+
+def assign_doctor_to_alert(alert):
+    pid = int(alert['patient_id'])
+    risk = alert['risk_probability']
+    # pick on-duty doctor: match specialty to ward; else least loaded
+    p = db['patients'].get(pid, {})
+    ward = p.get('ward', '')
+    on_duty = [d for d in db['doctors'] if d.get('on_duty')]
+    if not on_duty:
+        return None
+    from collections import Counter
+    load = Counter()
+    for a in db['alerts']:
+        if a.get('status') == 'PENDING' and a.get('assigned_doctor_id'):
+            load[a['assigned_doctor_id']] += 1
+    chosen = min(on_duty, key=lambda d: (load[d['id']], d['id']))
+    return chosen['id']
+
+
 def init_demo_patients():
     df = pd.read_parquet(os.path.join(DATA_DIR, 'cleaned.parquet'))
     np.random.seed(42)
@@ -230,6 +343,7 @@ def init_demo_patients():
 async def startup():
     load_model()
     init_demo_patients()
+    seed_hospitals_doctors()
     # Restore any persisted state that survived (devices, alerts, sim history).
     saved = _load_state()
     if saved:
@@ -277,6 +391,17 @@ class SimulateStepRequest(BaseModel):
 class DeviceRegisterRequest(BaseModel):
     token: str
     platform: str = "android"
+
+
+class HospitalAddRequest(BaseModel):
+    name: str
+    location: str = ""
+    wards: Optional[List[str]] = None
+
+
+class NoteAddRequest(BaseModel):
+    text: str
+    author: Optional[str] = "Doctor"
 
 
 def _get_service_account():
@@ -476,6 +601,147 @@ async def list_devices():
     return {"devices": db['devices']}
 
 
+# ---------- Hospitals ----------
+@app.get("/api/hospitals")
+async def get_hospitals():
+    current = db.get('current_hospital_id')
+    out = []
+    for h in db['hospitals']:
+        count = sum(1 for p in db['patients'].values() if p.get('hospital_id') == h['id'])
+        out.append({**h, 'patient_count': count, 'selected': h['id'] == current})
+    return {"hospitals": out, "current_hospital_id": current}
+
+
+@app.post("/api/hospitals")
+async def add_hospital(req: HospitalAddRequest):
+    new_id = max([h['id'] for h in db['hospitals']] or [0]) + 1
+    db['hospitals'].append({
+        "id": new_id, "name": req.name, "location": req.location or "", "wards": req.wards or ["A", "B", "ICU"]
+    })
+    _persist_state()
+    return {"status": "ok", "hospital": db['hospitals'][-1]}
+
+
+@app.post("/api/hospitals/{hospital_id}/select")
+async def select_hospital(hospital_id: int):
+    if not any(h['id'] == hospital_id for h in db['hospitals']):
+        raise HTTPException(status_code=404, detail="Hospital not found")
+    db['current_hospital_id'] = hospital_id
+    _persist_state()
+    return {"status": "ok", "current_hospital_id": hospital_id}
+
+
+@app.get("/api/hospitals/{hospital_id}/patients")
+async def hospital_patients(hospital_id: int):
+    patients = []
+    for pid, p in db['patients'].items():
+        trend, arrow = get_trend(pid)
+        if p.get('hospital_id') == hospital_id:
+            patients.append({
+                'patient_id': p['patient_id'], 'bed': p['bed'], 'ward': p['ward'],
+                'risk_probability': p['risk_probability'], 'risk_status': p['risk_status'],
+                'risk_trend': trend, 'trend_arrow': arrow, 'vitals': p['vitals'],
+                'assigned_doctor_id': p.get('assigned_doctor_id'), 'last_update': p['last_update']
+            })
+    patients.sort(key=lambda x: x['risk_probability'], reverse=True)
+    return {"patients": patients, "total": len(patients)}
+
+
+# ---------- Doctors & Escalation ----------
+@app.get("/api/doctors")
+async def get_doctors():
+    docs = []
+    for d in db['doctors']:
+        active = sum(1 for a in db['alerts'] if a['status'] == 'PENDING' and a.get('assigned_doctor_id') == d['id'])
+        docs.append({**d, 'active_alerts': active})
+    return {"doctors": docs}
+
+
+@app.get("/api/escalation")
+async def get_escalation():
+    num_critical, assignments, escalated, overloaded, workload = compute_doctor_load()
+    return {
+        "num_critical": num_critical,
+        "limit": ESCALATION_CRITICAL_LIMIT,
+        "needs_escalation": escalated,
+        "overloaded_doctor_ids": overloaded,
+        "assignments": assignments,
+        "workload": workload,
+        "escalation_log": db['escalation_log'][-10:]
+    }
+
+
+# ---------- Recommendations & trajectory ----------
+@app.get("/api/patients/{patient_id}/recommendations")
+async def patient_recommendations(patient_id: int):
+    p = db['patients'].get(patient_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return {"recommendations": recommend_actions(p['vitals'])}
+
+
+@app.get("/api/patients/{patient_id}/trajectory")
+async def patient_trajectory(patient_id: int):
+    state = db['simulator_state'].get(patient_id, {})
+    history = state.get('risk_history', [])
+    timestamps = [datetime.now().isoformat()] * len(history)
+    return {
+        "patient_id": patient_id,
+        "risk_history": [round(x, 4) for x in history],
+        "timestamps": timestamps,
+        "current": state.get('risk_history', [0])[-1] if history else None
+    }
+
+
+# ---------- Notes & Sentiment ----------
+@app.post("/api/patients/{patient_id}/notes")
+async def add_patient_note(patient_id: int, req: NoteAddRequest):
+    p = db['patients'].get(patient_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    p.setdefault('notes', [])
+    note = {
+        'id': len(p['notes']) + 1,
+        'text': req.text,
+        'author': req.author or "Doctor",
+        'created_at': datetime.now().isoformat(),
+        'sentiment': analyze_sentiment(req.text),
+        'sentiment_label': sentiment_label(analyze_sentiment(req.text)),
+    }
+    p['notes'].append(note)
+    _persist_state()
+    return {"status": "ok", "note": note}
+
+
+@app.get("/api/patients/{patient_id}/notes")
+async def get_patient_notes(patient_id: int):
+    p = db['patients'].get(patient_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return {"notes": p.get('notes', [])}
+
+
+def analyze_sentiment(text):
+    """Lightweight lexicon-based sentiment scoring (-1..1). No external model needed."""
+    positive = {"stable", "improving", "good", "better", "recovering", "responsive", "calm", "well", "clear", "positive"}
+    negative = {"deteriorating", "worse", "severe", "critical", "distressed", "confused", "febrile", "pain", "declining", "unstable", "concern"}
+    words = set(str(text).lower().split())
+    pos = len(words & positive)
+    neg = len(words & negative)
+    total = pos + neg
+    if total == 0:
+        return 0.0
+    return round((pos - neg) / total, 2)
+
+
+def sentiment_label(score):
+    if score > 0.15:
+        return "Positive"
+    if score < -0.15:
+        return "Negative"
+    return "Neutral"
+
+
 @app.post("/api/simulate/start")
 async def simulate_start(req: SimulateStepRequest):
     p = db['patients'].get(req.patient_id)
@@ -565,21 +831,39 @@ async def simulate_step(req: SimulateStepRequest):
     push_result = None
     if new_alert:
         db['alert_counter'] += 1
+        recs = recommend_actions(p['vitals'])
+        assigned_doc = assign_doctor_to_alert({'patient_id': int(req.patient_id), 'risk_probability': risk})
         alert = {
             'alert_id': db['alert_counter'],
             'patient_id': int(req.patient_id),
             'bed': p['bed'],
             'ward': p['ward'],
+            'hospital_id': p.get('hospital_id'),
+            'hospital_name': p.get('hospital_name'),
             'risk_probability': risk,
             'previous_risk': round(prev_risk, 4),
             'risk_change': round(risk - prev_risk, 4),
             'vitals_snapshot': p['vitals'].copy(),
+            'recommendations': recs,
+            'assigned_doctor_id': assigned_doc,
+            'escalated': False,
             'status': 'PENDING',
             'created_at': datetime.now().isoformat(),
             'message': f"Elevated deterioration risk detected ({round(risk*100,1)}%). Clinical review recommended."
         }
         db['alerts'].insert(0, alert)
         db['system_stats']['alerts_generated'] += 1
+        # Escalation check: if critical volume exceeds limits, escalate unresolved alerts
+        num_critical = sum(1 for x in db['patients'].values() if x.get('risk_probability', 0) >= 0.75)
+        if num_critical >= ESCALATION_CRITICAL_LIMIT:
+            for a in db['alerts']:
+                if a['status'] == 'PENDING' and a['patient_id'] == int(req.patient_id):
+                    a['escalated'] = True
+                    a['escalation_reason'] = f"{num_critical} CRITICAL patients exceed single-doctor capacity"
+                    db['escalation_log'].append({
+                        'alert_id': a['alert_id'], 'patient_id': a['patient_id'],
+                        'at': datetime.now().isoformat(), 'reason': a['escalation_reason']
+                    })
         push_result = send_push_notification(alert)
     db['system_stats']['observations_processed'] += 1
     _persist_state()
