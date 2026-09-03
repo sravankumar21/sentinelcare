@@ -21,6 +21,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
 MODELS_DIR = os.path.join(DATA_DIR, 'models')
+STATE_FILE = os.getenv('STATE_FILE', os.path.join(os.path.dirname(__file__), 'state.json'))
 
 db = {
     'patients': {},
@@ -69,6 +70,52 @@ def get_risk_status(prob):
 
 def get_risk_color(status):
     return {"STABLE": "#22c55e", "WATCH": "#eab308", "HIGH": "#f97316", "CRITICAL": "#ef4444"}.get(status, "#6b7280")
+
+
+def _sanitize(obj):
+    """Recursively convert numpy types / NaN to JSON-safe primitives."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return None
+    if pd.isna(obj) and not isinstance(obj, str):
+        return None
+    return obj
+
+
+def _persist_state():
+    """Write app state to disk so it survives recycles/restarts where the FS persists."""
+    try:
+        payload = {
+            'patients': _sanitize(db['patients']),
+            'alerts': _sanitize(db['alerts']),
+            'alert_counter': db['alert_counter'],
+            'simulator_state': _sanitize(db['simulator_state']),
+            'devices': _sanitize(db['devices']),
+            'system_stats': {**db['system_stats'], 'start_time': db['system_stats']['start_time']},
+        }
+        with open(STATE_FILE, 'w') as f:
+            f.write(json.dumps(payload))
+    except Exception:  # never let persistence break the API
+        pass
+
+
+def _load_state():
+    """Restore persisted state (devices, alerts, simulator/obs history, stats)."""
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE) as f:
+            payload = json.load(f)
+        return payload
+    except Exception:
+        return {}
 
 
 def predict_risk(obs_df):
@@ -183,6 +230,43 @@ def init_demo_patients():
 async def startup():
     load_model()
     init_demo_patients()
+    # Restore any persisted state that survived (devices, alerts, sim history).
+    saved = _load_state()
+    if saved:
+        if saved.get('devices'):
+            db['devices'].update(saved['devices'])
+        if saved.get('alerts'):
+            db['alerts'] = saved['alerts']
+        db['alert_counter'] = int(saved.get('alert_counter', 0))
+        if saved.get('simulator_state'):
+            for pid, st in saved['simulator_state'].items():
+                if pid in db['simulator_state']:
+                    db['simulator_state'][pid] = st
+        for k in ('observations_processed', 'alerts_generated', 'push_sent'):
+            if k in saved.get('system_stats', {}):
+                db['system_stats'][k] = saved['system_stats'][k]
+        # Re-derive patient risk/status from the restored observation history.
+        for pid, st in db['simulator_state'].items():
+            p = db['patients'].get(pid)
+            if p and st.get('obs_df'):
+                obs_df = pd.DataFrame(st['obs_df'])
+                try:
+                    risk, status = predict_risk(obs_df)
+                    p['risk_probability'] = round(risk, 4)
+                    p['risk_status'] = status
+                    # refresh vitals from last obs
+                    last = st['obs_df'][-1]
+                    p['vitals'] = {
+                        'heart_rate': float(last.get('heart_rate', 0)),
+                        'respiratory_rate': float(last.get('respiratory_rate', 0)),
+                        'spo2_pct': float(last.get('spo2_pct', 0)),
+                        'temperature_c': float(last.get('temperature_c', 0)),
+                        'systolic_bp': float(last.get('systolic_bp', 0)),
+                        'diastolic_bp': float(last.get('diastolic_bp', 0)),
+                    }
+                except Exception:
+                    pass
+        _persist_state()
 
 
 class SimulateStepRequest(BaseModel):
@@ -383,6 +467,7 @@ async def register_device(req: DeviceRegisterRequest):
         'register_at': datetime.now().isoformat(),
         'last_seen': datetime.now().isoformat(),
     }
+    _persist_state()
     return {"status": "ok", "registered": True, "device_count": len(db['devices'])}
 
 
@@ -497,6 +582,7 @@ async def simulate_step(req: SimulateStepRequest):
         db['system_stats']['alerts_generated'] += 1
         push_result = send_push_notification(alert)
     db['system_stats']['observations_processed'] += 1
+    _persist_state()
 
     return {
         'patient_id': req.patient_id,
@@ -538,6 +624,7 @@ async def simulate_reset(patient_id: int):
         'diastolic_bp': float(latest['diastolic_bp']),
     }
     p['last_update'] = datetime.now().isoformat()
+    _persist_state()
     return {"status": "reset"}
 
 
