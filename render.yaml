@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: sentinelcare-backend
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/system/status

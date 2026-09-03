@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "SentinelCare",
+    "slug": "sentinelcare-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0a0e1a"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0a0e1a"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

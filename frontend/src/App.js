@@ -1,0 +1,555 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
+import './App.css';
+
+const API = 'http://localhost:8000/api';
+
+const getColor = (status) => ({
+  STABLE: '#22c55e', WATCH: '#eab308', HIGH: '#f97316', CRITICAL: '#ef4444'
+}[status] || '#6b7280');
+
+function Nav({ page, setPage }) {
+  return (
+    <nav className="nav">
+      <div className="nav-brand">SENTINELCARE</div>
+      <div className="nav-links">
+        {[['command', 'Command Center'], ['alerts', 'Alerts'], ['simulator', 'Simulator'], ['model', 'Model Performance']].map(([key, label]) => (
+          <button key={key} className={`nav-link ${page === key ? 'active' : ''}`} onClick={() => setPage(key)}>
+            {label}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function CommandCenter({ patients, summary, onSelectPatient, alerts }) {
+  const [selectedWard, setSelectedWard] = useState(null);
+  const displayPatients = selectedWard
+    ? patients.filter(p => p.ward === selectedWard)
+    : patients;
+
+  return (
+    <div className="dashboard fade-in">
+      <div className="stats-row">
+        {[
+          { label: 'Total Patients', value: summary.total_patients, color: '#3b82f6' },
+          { label: 'Stable', value: summary.stable, color: '#22c55e' },
+          { label: 'Watch', value: summary.watch, color: '#eab308' },
+          { label: 'High Risk', value: summary.high, color: '#f97316' },
+          { label: 'Critical', value: summary.critical, color: '#ef4444' },
+        ].map(s => (
+          <div key={s.label} className="stat-card glass">
+            <div className="stat-value" style={{ color: s.color }}>{s.value}</div>
+            <div className="stat-label">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="patient-queue glass">
+        <div className="section-title">Patient Risk Queue</div>
+        {displayPatients.map(p => (
+          <div key={p.patient_id} className="patient-row" onClick={() => onSelectPatient(p.patient_id)}>
+            <div>
+              <div className="patient-bed">{p.bed}</div>
+              <div className="patient-ward">Ward {p.ward}</div>
+            </div>
+            <div>
+              <div className="risk-badge" style={{ color: getColor(p.risk_status), background: `${getColor(p.risk_status)}15` }}>
+                {Math.round(p.risk_probability * 100)}%
+              </div>
+            </div>
+            <div>
+              <div className="risk-bar-container">
+                <div className="risk-bar" style={{ width: `${p.risk_probability * 100}%`, background: getColor(p.risk_status) }} />
+              </div>
+            </div>
+            <div className="trend-arrow" style={{ color: getColor(p.risk_status) }}>{p.trend_arrow}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              {p.risk_status}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="ward-overview glass">
+        <div className="section-title">Live Ward View</div>
+        {Object.entries(summary.wards || {}).map(([ward, data]) => (
+          <div key={ward} className="ward-section">
+            <div className="ward-title" onClick={() => setSelectedWard(selectedWard === ward ? null : ward)} style={{ cursor: 'pointer' }}>
+              WARD {ward} ({data.count}) {selectedWard === ward ? '✕ Clear filter' : ''}
+            </div>
+            <div className="bed-grid">
+              {(data.patients || []).map(p => (
+                <div key={p.patient_id} className="bed-card glass-sm" onClick={() => onSelectPatient(p.patient_id)}>
+                  <div className="bed-name">{p.bed}</div>
+                  <div className="bed-risk" style={{ color: getColor(p.status) }}>{Math.round(p.risk * 100)}%</div>
+                  <div className="bed-status">{p.status}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="glass" style={{ gridColumn: '1 / -1', padding: 0 }}>
+        <div className="section-title">
+          Recent Alerts {alerts.length > 0 && <span className="status-dot pulse" style={{ background: '#ef4444' }} />}
+        </div>
+        {alerts.slice(0, 5).map(a => (
+          <div key={a.alert_id} className="patient-row alert-flash">
+            <div>
+              <div className="patient-bed">{a.bed}</div>
+              <div className="patient-ward">Ward {a.ward}</div>
+            </div>
+            <div>
+              <div className="alert-badge" style={{ background: a.status === 'PENDING' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)', color: a.status === 'PENDING' ? '#ef4444' : '#22c55e' }}>
+                {a.status}
+              </div>
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{a.message}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{Math.round(a.risk_probability * 100)}%</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{new Date(a.created_at).toLocaleTimeString()}</div>
+          </div>
+        ))}
+        {alerts.length === 0 && <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>No alerts</div>}
+      </div>
+    </div>
+  );
+}
+
+function PatientDetail({ patientId, onBack }) {
+  const [patient, setPatient] = useState(null);
+  const [explanation, setExplanation] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/patients/${patientId}`).then(r => r.json()).then(setPatient);
+    fetch(`${API}/patients/${patientId}/explanation`).then(r => r.json()).then(setExplanation);
+  }, [patientId]);
+
+  if (!patient) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Loading...</div>;
+
+  const riskData = (patient.risk_history || []).map((r, i) => ({ hour: i, risk: Math.round(r * 100) }));
+  const timeline = (patient.vitals_history || []).map((v, i) => ({
+    hour: i, hr: v.heart_rate, spo2: v.spo2_pct, rr: v.respiratory_rate,
+    sys: v.systolic_bp, dia: v.diastolic_bp
+  }));
+
+  return (
+    <div className="patient-detail fade-in">
+      <div className="detail-header">
+        <div>
+          <div className="detail-id">PATIENT #{patient.patient_id}</div>
+          <div className="detail-location">BED {patient.bed} · WARD {patient.ward} · {patient.age}y {patient.gender}</div>
+        </div>
+        <button className="detail-back" onClick={onBack}>← Back to Dashboard</button>
+      </div>
+
+      <div className="detail-grid">
+        <div className="detail-risk-panel glass">
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 2 }}>Current Deterioration Risk</div>
+          <div className="risk-big-number" style={{ color: getColor(patient.risk_status) }}>
+            {Math.round(patient.risk_probability * 100)}%
+          </div>
+          <div className="risk-big-status" style={{ color: getColor(patient.risk_status), background: `${getColor(patient.risk_status)}15` }}>
+            {patient.risk_status} {patient.trend_arrow}
+          </div>
+          <div style={{ marginTop: 12, fontSize: 13, color: 'var(--text-secondary)' }}>{patient.risk_trend}</div>
+        </div>
+
+        <div className="vitals-grid glass">
+          <div className="vital-card glass-sm">
+            <div className="vital-label">SpO₂</div>
+            <div className="vital-value" style={{ color: patient.vitals.spo2_pct < 92 ? '#ef4444' : '#22c55e' }}>
+              {patient.vitals.spo2_pct.toFixed(1)}%
+            </div>
+          </div>
+          <div className="vital-card glass-sm">
+            <div className="vital-label">Heart Rate</div>
+            <div className="vital-value" style={{ color: patient.vitals.heart_rate > 120 ? '#f97316' : '#22c55e' }}>
+              {patient.vitals.heart_rate.toFixed(0)} <span className="vital-unit">bpm</span>
+            </div>
+          </div>
+          <div className="vital-card glass-sm">
+            <div className="vital-label">Respiratory Rate</div>
+            <div className="vital-value" style={{ color: patient.vitals.respiratory_rate > 28 ? '#f97316' : '#22c55e' }}>
+              {patient.vitals.respiratory_rate.toFixed(0)} <span className="vital-unit">/min</span>
+            </div>
+          </div>
+          <div className="vital-card glass-sm">
+            <div className="vital-label">Temperature</div>
+            <div className="vital-value">{patient.vitals.temperature_c.toFixed(1)}°C</div>
+          </div>
+          <div className="vital-card glass-sm" style={{ gridColumn: '1 / -1' }}>
+            <div className="vital-label">Blood Pressure</div>
+            <div className="vital-value">
+              {patient.vitals.systolic_bp.toFixed(0)}/{patient.vitals.diastolic_bp.toFixed(0)} <span className="vital-unit">mmHg</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="chart-container glass">
+          <div className="chart-title">Risk Trajectory</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <AreaChart data={riskData}>
+              <defs>
+                <linearGradient id="riskGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={getColor(patient.risk_status)} stopOpacity={0.3} />
+                  <stop offset="100%" stopColor={getColor(patient.risk_status)} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="hour" stroke="#64748b" fontSize={11} tickLine={false} />
+              <YAxis domain={[0, 100]} stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
+              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }} />
+              <Area type="monotone" dataKey="risk" stroke={getColor(patient.risk_status)} fill="url(#riskGrad)" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="chart-container glass">
+          <div className="chart-title">Vital Signs Timeline</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={timeline}>
+              <XAxis dataKey="hour" stroke="#64748b" fontSize={11} tickLine={false} />
+              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }} />
+              <Line type="monotone" dataKey="spo2" stroke="#3b82f6" strokeWidth={2} dot={false} name="SpO₂ %" />
+              <Line type="monotone" dataKey="hr" stroke="#ef4444" strokeWidth={2} dot={false} name="HR" />
+              <Line type="monotone" dataKey="rr" stroke="#22c55e" strokeWidth={2} dot={false} name="RR" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="explanation-section glass" style={{ gridColumn: '1 / -1' }}>
+          <div className="chart-title">Key Signals — Model Contributors</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, padding: '0 16px' }}>
+            These features contributed most strongly to the model's current risk estimate.
+          </div>
+          {(explanation?.factors || []).map((f, i) => (
+            <div key={i} className="factor-item">
+              <div>
+                <div className="factor-name">{f.feature}</div>
+                <div className="factor-detail">{f.direction === 'up' ? '↑' : '↓'} {f.magnitude} change</div>
+              </div>
+              <div className="impact-badge" style={{
+                background: f.impact === 'high' ? 'rgba(239,68,68,0.15)' : 'rgba(234,179,8,0.15)',
+                color: f.impact === 'high' ? '#ef4444' : '#eab308'
+              }}>{f.impact}</div>
+            </div>
+          ))}
+          {(!explanation?.factors || explanation.factors.length === 0) && (
+            <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>No significant changes detected</div>
+          )}
+          <div style={{ padding: '16px 16px 0', fontSize: 13, color: '#f97316', fontWeight: 500 }}>
+            ⚠ Elevated deterioration risk. Clinical review recommended.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlertsPage({ alerts, onAcknowledge }) {
+  const [filter, setFilter] = useState('all');
+  const filtered = filter === 'all' ? alerts : alerts.filter(a => a.status === filter.toUpperCase());
+
+  return (
+    <div className="alerts-page fade-in">
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>Alert Center</h2>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        {['all', 'pending', 'acknowledged'].map(f => (
+          <button key={f} className={`btn ${filter === f ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFilter(f)}>
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
+        ))}
+      </div>
+      {filtered.map(a => (
+        <div key={a.alert_id} className="alert-item glass">
+          <div className="alert-info">
+            <div className="alert-patient">
+              Bed {a.bed} · Ward {a.ward} · Patient #{a.patient_id}
+            </div>
+            <div className="alert-message">{a.message}</div>
+            <div className="alert-time">Risk: {Math.round(a.risk_probability * 100)}% · {new Date(a.created_at).toLocaleTimeString()}</div>
+          </div>
+          <div className="alert-actions">
+            <div className="alert-badge" style={{
+              background: a.status === 'PENDING' ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
+              color: a.status === 'PENDING' ? '#ef4444' : '#22c55e'
+            }}>{a.status}</div>
+            {a.status === 'PENDING' && (
+              <button className="btn btn-primary" onClick={() => onAcknowledge(a.alert_id)}>Acknowledge</button>
+            )}
+          </div>
+        </div>
+      ))}
+      {filtered.length === 0 && <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>No alerts</div>}
+    </div>
+  );
+}
+
+function Simulator({ patients, onRefresh }) {
+  const [selected, setSelected] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [simData, setSimData] = useState(null);
+
+  const startSim = async (mode) => {
+    if (!selected) return;
+    await fetch(`${API}/simulate/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id: parseInt(selected), mode })
+    });
+    setRunning(true);
+  };
+
+  const stepSim = async () => {
+    if (!selected) return;
+    const res = await fetch(`${API}/simulate/step`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patient_id: parseInt(selected), mode: 'deteriorate' })
+    });
+    const data = await res.json();
+    setSimData(data);
+    onRefresh();
+  };
+
+  const resetSim = async () => {
+    if (!selected) return;
+    await fetch(`${API}/simulate/reset?patient_id=${selected}`, { method: 'POST' });
+    setRunning(false);
+    setSimData(null);
+    onRefresh();
+  };
+
+  const selectedPatient = patients.find(p => p.patient_id === parseInt(selected));
+
+  return (
+    <div className="simulator-page fade-in">
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Patient Simulator</h2>
+      <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 24 }}>
+        Simulate incoming observations to demonstrate the early warning system
+      </p>
+
+      <div className="glass" style={{ padding: 24, marginBottom: 20 }}>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, color: 'var(--text-secondary)', display: 'block', marginBottom: 8 }}>Select Patient</label>
+          <select
+            value={selected || ''}
+            onChange={e => { setSelected(e.target.value); setSimData(null); setRunning(false); }}
+            style={{
+              padding: '10px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)',
+              background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)', fontSize: 14, width: '100%'
+            }}
+          >
+            <option value="">Select a patient...</option>
+            {patients.map(p => (
+              <option key={p.patient_id} value={p.patient_id}>
+                Bed {p.bed} — Ward {p.ward} — Risk {Math.round(p.risk_probability * 100)}%
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {selectedPatient && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+            {[
+              { label: 'Heart Rate', value: `${selectedPatient.vitals.heart_rate.toFixed(0)} bpm` },
+              { label: 'SpO₂', value: `${selectedPatient.vitals.spo2_pct.toFixed(1)}%` },
+              { label: 'Resp Rate', value: `${selectedPatient.vitals.respiratory_rate.toFixed(0)}/min` },
+              { label: 'Temperature', value: `${selectedPatient.vitals.temperature_c.toFixed(1)}°C` },
+              { label: 'Blood Pressure', value: `${selectedPatient.vitals.systolic_bp.toFixed(0)}/${selectedPatient.vitals.diastolic_bp.toFixed(0)}` },
+              { label: 'Current Risk', value: `${Math.round(selectedPatient.risk_probability * 100)}%`, color: getColor(selectedPatient.risk_status) },
+            ].map(v => (
+              <div key={v.label} className="glass-sm" style={{ padding: 12, textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{v.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: v.color || 'var(--text-primary)' }}>{v.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="sim-controls">
+          <button className="sim-btn" onClick={() => startSim('stable')} disabled={!selected}>Simulate Normal</button>
+          <button className="sim-btn danger" onClick={() => startSim('deteriorate')} disabled={!selected}>Simulate Deterioration</button>
+          <button className="sim-btn" onClick={stepSim} disabled={!selected || !running}>Step →</button>
+          <button className="sim-btn" onClick={resetSim} disabled={!selected}>Reset</button>
+          <button className="sim-btn" onClick={async () => {
+            if (!selected || !running) return;
+            for (let i = 0; i < 10; i++) await stepSim();
+          }} disabled={!selected || !running}>Auto-Run 10 Steps</button>
+        </div>
+      </div>
+
+      {simData && (
+        <div className="glass fade-in" style={{ padding: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Latest Observation</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+            {[
+              { label: 'Risk', value: `${Math.round(simData.risk_probability * 100)}%`, color: getColor(simData.risk_status) },
+              { label: 'SpO₂', value: `${simData.vitals.spo2_pct.toFixed(1)}%` },
+              { label: 'Heart Rate', value: `${simData.vitals.heart_rate.toFixed(0)} bpm` },
+              { label: 'Resp Rate', value: `${simData.vitals.respiratory_rate.toFixed(0)}/min` },
+              { label: 'BP', value: `${simData.vitals.systolic_bp.toFixed(0)}/${simData.vitals.diastolic_bp.toFixed(0)}` },
+              { label: 'Status', value: simData.risk_status, color: getColor(simData.risk_status) },
+            ].map(v => (
+              <div key={v.label} className="glass-sm" style={{ padding: 12, textAlign: 'center' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{v.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: v.color || 'var(--text-primary)' }}>{v.value}</div>
+              </div>
+            ))}
+          </div>
+          {simData.new_alert && (
+            <div style={{ marginTop: 16, padding: 16, background: 'rgba(239,68,68,0.1)', borderRadius: 10, border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', fontWeight: 600 }}>
+              🚨 SENTINELCARE ALERT — Elevated deterioration risk detected. Clinical review recommended.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ModelPage() {
+  const [metrics, setMetrics] = useState(null);
+  useEffect(() => { fetch(`${API}/model/metrics`).then(r => r.json()).then(setMetrics); }, []);
+
+  if (!metrics) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Loading model metrics...</div>;
+
+  const valResults = metrics.validation_results || {};
+  const testResults = metrics.test_results || {};
+
+  return (
+    <div className="model-page fade-in">
+      <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 24 }}>Model Performance</h2>
+
+      <div className="model-grid">
+        <div className="model-card glass">
+          <div className="chart-title">Validation Results</div>
+          {Object.entries(valResults).filter(([k]) => !['confusion_matrix'].includes(k)).map(([name, res]) => (
+            <div key={name} style={{ marginBottom: 16 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: 'var(--accent-cyan)' }}>{name}</div>
+              {['precision', 'recall', 'f1', 'roc_auc', 'pr_auc'].map(m => (
+                <div key={m} className="metric-row">
+                  <span className="metric-name">{m.replace('_', ' ').toUpperCase()}</span>
+                  <span className="metric-value">{res[m]?.toFixed(4) || 'N/A'}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        <div className="model-card glass">
+          <div className="chart-title">Test Set Results</div>
+          {['precision', 'recall', 'f1', 'roc_auc', 'pr_auc'].map(m => (
+            <div key={m} className="metric-row">
+              <span className="metric-name">{m.replace('_', ' ').toUpperCase()}</span>
+              <span className="metric-value">{testResults[m]?.toFixed(4) || 'N/A'}</span>
+            </div>
+          ))}
+          {testResults.confusion_matrix && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>Confusion Matrix</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+                <div className="glass-sm" style={{ padding: 8, textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>TN</div>
+                  <div style={{ fontWeight: 700 }}>{testResults.confusion_matrix[0][0]}</div>
+                </div>
+                <div className="glass-sm" style={{ padding: 8, textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>FP</div>
+                  <div style={{ fontWeight: 700, color: '#eab308' }}>{testResults.confusion_matrix[0][1]}</div>
+                </div>
+                <div className="glass-sm" style={{ padding: 8, textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>FN</div>
+                  <div style={{ fontWeight: 700, color: '#ef4444' }}>{testResults.confusion_matrix[1][0]}</div>
+                </div>
+                <div className="glass-sm" style={{ padding: 8, textAlign: 'center' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 10 }}>TP</div>
+                  <div style={{ fontWeight: 700, color: '#22c55e' }}>{testResults.confusion_matrix[1][1]}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {testResults.roc_curve && (
+          <div className="model-card glass">
+            <div className="chart-title">ROC Curve</div>
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={testResults.roc_curve.fpr.map((f, i) => ({ fpr: f, tpr: testResults.roc_curve.tpr[i] }))}>
+                <XAxis dataKey="fpr" stroke="#64748b" fontSize={11} tickLine={false} label={{ value: 'FPR', position: 'bottom', fontSize: 11 }} />
+                <YAxis stroke="#64748b" fontSize={11} tickLine={false} label={{ value: 'TPR', angle: -90, position: 'left', fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }} />
+                <Line type="monotone" dataKey="tpr" stroke="#3b82f6" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
+        {testResults.pr_curve && (
+          <div className="model-card glass">
+            <div className="chart-title">Precision-Recall Curve</div>
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={testResults.pr_curve.recall.map((r, i) => ({ recall: r, precision: testResults.pr_curve.precision[i] }))}>
+                <XAxis dataKey="recall" stroke="#64748b" fontSize={11} tickLine={false} label={{ value: 'Recall', position: 'bottom', fontSize: 11 }} />
+                <YAxis stroke="#64748b" fontSize={11} tickLine={false} label={{ value: 'Precision', angle: -90, position: 'left', fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }} />
+                <Line type="monotone" dataKey="precision" stroke="#06b6d4" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [page, setPage] = useState('command');
+  const [patients, setPatients] = useState([]);
+  const [summary, setSummary] = useState({});
+  const [alerts, setAlerts] = useState([]);
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [systemStatus, setSystemStatus] = useState(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [pRes, sRes, aRes, stRes] = await Promise.all([
+        fetch(`${API}/patients`).then(r => r.json()),
+        fetch(`${API}/dashboard/summary`).then(r => r.json()),
+        fetch(`${API}/alerts`).then(r => r.json()),
+        fetch(`${API}/system/status`).then(r => r.json())
+      ]);
+      setPatients(pRes.patients);
+      setSummary(sRes);
+      setAlerts(aRes.alerts);
+      setSystemStatus(stRes);
+    } catch (e) { console.error('API error:', e); }
+  }, []);
+
+  useEffect(() => { refresh(); const interval = setInterval(refresh, 5000); return () => clearInterval(interval); }, [refresh]);
+
+  const handleAcknowledge = async (alertId) => {
+    await fetch(`${API}/alerts/${alertId}/acknowledge`, { method: 'POST' });
+    refresh();
+  };
+
+  const handleSelectPatient = (pid) => {
+    setSelectedPatient(pid);
+    setPage('detail');
+  };
+
+  return (
+    <div>
+      <Nav page={page} setPage={(p) => { setPage(p); setSelectedPatient(null); }} />
+      {page === 'command' && <CommandCenter patients={patients} summary={summary} onSelectPatient={handleSelectPatient} alerts={alerts} />}
+      {page === 'detail' && selectedPatient && <PatientDetail patientId={selectedPatient} onBack={() => setPage('command')} />}
+      {page === 'alerts' && <AlertsPage alerts={alerts} onAcknowledge={handleAcknowledge} />}
+      {page === 'simulator' && <Simulator patients={patients} onRefresh={refresh} />}
+      {page === 'model' && <ModelPage />}
+      <div className="disclaimer">
+        SentinelCare is a research and educational prototype using simulated clinical data. Risk estimates are not medical diagnoses and must not be used to make clinical decisions.
+      </div>
+    </div>
+  );
+}
+
+export default App;

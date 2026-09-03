@@ -1,0 +1,36 @@
+# --- Large data we DON'T need in the deploy image or repo ---
+data.parquet
+data/dataset.parquet
+data/engineered.parquet
+data/patient_splits.json
+
+# --- Logs ---
+*.log
+backend.log
+ml_train.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- JS / Node ---
+node_modules/
+mobile/.expo/
+mobile/dist/
+frontend/node_modules/
+frontend/dist/
+.env
+.env.local
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# --- Render / deploy ---
+.rndr/
