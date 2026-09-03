@@ -195,12 +195,25 @@ class DeviceRegisterRequest(BaseModel):
     platform: str = "android"
 
 
+def _get_service_account():
+    """Load the Firebase service account from env (JSON) or a file path."""
+    env_json = os.getenv('FCM_SERVICE_ACCOUNT_JSON')
+    if env_json:
+        return json.loads(env_json)
+    path = os.getenv('FCM_SERVICE_ACCOUNT_PATH')
+    if path and os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return None
+
+
 def send_push_notification(alert: dict):
-    """Deliver a real push (FCM) when configured, else log.
+    """Deliver a real push via Firebase Cloud Messaging (v1 HTTP API).
 
     Config (env vars on the host):
-      FCM_SERVER_KEY  - server key from Firebase Cloud Messaging (legacy HTTP API).
-      PUSH_MODE       - "fcm" to actually send, "log" (default) to only log.
+      PUSH_MODE                 - "fcm" to actually send, "log" (default) to only log.
+      FCM_SERVICE_ACCOUNT_JSON  - contents of the firebase service account JSON.
+      FCM_SERVICE_ACCOUNT_PATH  - OR a path to that JSON file.
     """
     token = next(iter(db['devices'].keys()), None)
     db['system_stats']['push_sent'] += 1
@@ -208,34 +221,48 @@ def send_push_notification(alert: dict):
     if mode != 'fcm' or not token:
         return {"delivered": False, "mode": mode, "reason": "no token or PUSH_MODE!=fcm"}
 
-    server_key = os.getenv('FCM_SERVER_KEY', '')
-    if not server_key:
-        return {"delivered": False, "mode": mode, "reason": "FCM_SERVER_KEY not set"}
+    sa = _get_service_account()
+    if not sa:
+        return {"delivered": False, "mode": mode, "reason": "FCM_SERVICE_ACCOUNT not set"}
 
-    payload = json.dumps({
-        "to": token,
-        "notification": {
-            "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
-            "body": (
-                f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
-                "Clinical review recommended. "
-                f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
-                f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
-            ),
-            "sound": "default",
-        },
-        "data": {"alert_id": str(alert.get('alert_id')), "patient_id": str(alert.get('patient_id'))},
-        "priority": "high",
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://fcm.googleapis.com/fcm/send",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"key={server_key}"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return {"delivered": True, "status": resp.status}
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(
+            sa, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+        )
+        # Force a fresh token; the google-auth default RSA flow handles expiry.
+        creds.refresh if hasattr(creds, 'refresh') else None
+        import google.auth.transport.requests
+        creds.refresh(google.auth.transport.requests.Request())
+        access_token = creds.token
+
+        project = sa.get('project_id', 'sentinelcare')
+        message = {
+            "message": {
+                "token": token,
+                "notification": {
+                    "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
+                    "body": (
+                        f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
+                        "Clinical review recommended. "
+                        f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
+                        f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
+                    ),
+                },
+                "data": {
+                    "alert_id": str(alert.get('alert_id')),
+                    "patient_id": str(alert.get('patient_id')),
+                },
+                "android": {"priority": "HIGH", "notification": {"channel_id": "deterioration", "sound": "default"}},
+            }
+        }
+        req = urllib.request.Request(
+            f"https://fcm.googleapis.com/v1/projects/{project}/messages:send",
+            data=json.dumps(message).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return {"delivered": True, "status": resp.status, "name": resp.read().decode()[:120]}
     except Exception as e:
         return {"delivered": False, "error": str(e)}
 
