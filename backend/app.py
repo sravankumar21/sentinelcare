@@ -4,6 +4,7 @@ import sys
 import json
 import pickle
 import random
+import urllib.request
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -26,9 +27,11 @@ db = {
     'alerts': [],
     'alert_counter': 0,
     'simulator_state': {},
+    'devices': {},  # device_token -> {platform, last_seen}
     'system_stats': {
         'observations_processed': 0,
         'alerts_generated': 0,
+        'push_sent': 0,
         'start_time': datetime.now().isoformat()
     }
 }
@@ -187,6 +190,56 @@ class SimulateStepRequest(BaseModel):
     mode: str = "deteriorate"
 
 
+class DeviceRegisterRequest(BaseModel):
+    token: str
+    platform: str = "android"
+
+
+def send_push_notification(alert: dict):
+    """Deliver a real push (FCM) when configured, else log.
+
+    Config (env vars on the host):
+      FCM_SERVER_KEY  - server key from Firebase Cloud Messaging (legacy HTTP API).
+      PUSH_MODE       - "fcm" to actually send, "log" (default) to only log.
+    """
+    token = next(iter(db['devices'].keys()), None)
+    db['system_stats']['push_sent'] += 1
+    mode = os.getenv('PUSH_MODE', 'log')
+    if mode != 'fcm' or not token:
+        return {"delivered": False, "mode": mode, "reason": "no token or PUSH_MODE!=fcm"}
+
+    server_key = os.getenv('FCM_SERVER_KEY', '')
+    if not server_key:
+        return {"delivered": False, "mode": mode, "reason": "FCM_SERVER_KEY not set"}
+
+    payload = json.dumps({
+        "to": token,
+        "notification": {
+            "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
+            "body": (
+                f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
+                "Clinical review recommended. "
+                f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
+                f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
+            ),
+            "sound": "default",
+        },
+        "data": {"alert_id": str(alert.get('alert_id')), "patient_id": str(alert.get('patient_id'))},
+        "priority": "high",
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://fcm.googleapis.com/fcm/send",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"key={server_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return {"delivered": True, "status": resp.status}
+    except Exception as e:
+        return {"delivered": False, "error": str(e)}
+
+
 @app.get("/api/patients")
 async def get_patients():
     patients = []
@@ -292,6 +345,25 @@ async def acknowledge_alert(alert_id: int):
     raise HTTPException(status_code=404, detail="Alert not found")
 
 
+@app.post("/api/devices/register")
+async def register_device(req: DeviceRegisterRequest):
+    """Register a device push token so future alerts can be delivered to it."""
+    token = req.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+    db['devices'][token] = {
+        'platform': req.platform,
+        'register_at': datetime.now().isoformat(),
+        'last_seen': datetime.now().isoformat(),
+    }
+    return {"status": "ok", "registered": True, "device_count": len(db['devices'])}
+
+
+@app.get("/api/devices")
+async def list_devices():
+    return {"devices": db['devices']}
+
+
 @app.post("/api/simulate/start")
 async def simulate_start(req: SimulateStepRequest):
     p = db['patients'].get(req.patient_id)
@@ -378,6 +450,7 @@ async def simulate_step(req: SimulateStepRequest):
     trend, arrow = get_trend(req.patient_id)
 
     new_alert = risk >= ALERT_THRESHOLD and prev_risk < ALERT_THRESHOLD
+    push_result = None
     if new_alert:
         db['alert_counter'] += 1
         alert = {
@@ -395,7 +468,7 @@ async def simulate_step(req: SimulateStepRequest):
         }
         db['alerts'].insert(0, alert)
         db['system_stats']['alerts_generated'] += 1
-
+        push_result = send_push_notification(alert)
     db['system_stats']['observations_processed'] += 1
 
     return {
@@ -406,7 +479,8 @@ async def simulate_step(req: SimulateStepRequest):
         'risk_trend': trend,
         'trend_arrow': arrow,
         'new_alert': new_alert,
-        'show_alert': new_alert
+        'show_alert': new_alert,
+        'push': push_result
     }
 
 
