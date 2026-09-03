@@ -6,6 +6,7 @@ import { Background, GlassCard } from '../components/Glass';
 import { PatientCard } from '../components/PatientCard';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
+import ThemeToggle from '../components/ThemeToggle';
 import * as Notifications from 'expo-notifications';
 
 export default function CommandCenter({ navigation }) {
@@ -83,8 +84,13 @@ export default function CommandCenter({ navigation }) {
         )}
 
         <View style={styles.hero}>
-          <Text style={styles.greeting}>Good Morning, Doctor</Text>
-          <Text style={styles.hospital}>Gandhi Hospital</Text>
+          <View style={styles.heroRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.greeting}>Good Morning, Doctor</Text>
+              <Text style={styles.hospital}>Gandhi Hospital</Text>
+            </View>
+            <ThemeToggle />
+          </View>
           <Text style={styles.subtitle}>
             {(priority.length || 0)} patients requiring attention
           </Text>
@@ -156,6 +162,7 @@ const buildStyles = (colors) => StyleSheet.create({
   offline: { padding: 12, marginBottom: 12, borderColor: 'rgba(239,68,68,0.3)' },
   offlineText: { color: '#ef4444', fontSize: 13, textAlign: 'center' },
   hero: { marginBottom: 18 },
+  heroRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   greeting: { fontSize: 24, fontWeight: '800', color: colors.textPrimary },
   hospital: { fontSize: 14, color: colors.accentCyan, fontWeight: '600', marginTop: 4, letterSpacing: 1 },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },

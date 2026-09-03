@@ -2,7 +2,6 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme, getStatusColor } from '../theme';
 
-const RISK_LABELS = { STABLE: 'Stable', WATCH: 'Watch', HIGH: 'High Risk', CRITICAL: 'Critical Review' };
 const TREND_ARROWS = { 'RAPIDLY INCREASING': '↑↑', INCREASING: '↑', DECREASING: '↓', STABLE: '→' };
 
 export const PatientCard = ({ patient, onPress }) => {
@@ -30,8 +29,11 @@ export const PatientCard = ({ patient, onPress }) => {
         </View>
 
         <View style={styles.footer}>
-          <Text style={[styles.status, { color }]}>{RISK_LABELS[patient.risk_status]}</Text>
-          <Text style={[styles.trend, { color }]}>{arrow} {patient.risk_trend}</Text>
+          <View style={styles.footerTag}>
+            <View style={[styles.dot, { backgroundColor: color }]} />
+            <Text style={[styles.trend, { color }]}>{arrow}</Text>
+          </View>
+          <Text style={styles.pctSmall}>{pct}% risk</Text>
         </View>
       </View>
     </TouchableOpacity>
@@ -55,6 +57,8 @@ const buildStyles = (colors) => StyleSheet.create({
   bar: { height: 5, borderRadius: 3, backgroundColor: colors.cardBg, marginTop: 12, overflow: 'hidden' },
   barFill: { height: 5, borderRadius: 3 },
   footer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-  status: { fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-  trend: { fontSize: 11, color: colors.textSecondary },
+  footerTag: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dot: { width: 8, height: 8, borderRadius: 4 },
+  pctSmall: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  trend: { fontSize: 12, color: colors.textSecondary },
 });

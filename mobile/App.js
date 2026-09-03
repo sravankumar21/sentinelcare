@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, StatusBar, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, StatusBar, Platform } from 'react-native';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -56,19 +56,6 @@ async function registerForPushNotificationsAsync() {
 
 const Stack = createNativeStackNavigator();
 
-function ThemeToggle() {
-  const { mode, colors, toggle } = useTheme();
-  return (
-    <TouchableOpacity style={[styles.toggle, { borderColor: colors.glassBorder, backgroundColor: colors.chipBg }]}
-      onPress={toggle} activeOpacity={0.8}>
-      <Text style={styles.toggleIcon}>{mode === 'dark' ? '☀️' : '🌙'}</Text>
-      <Text style={[styles.toggleLabel, { color: colors.accentBlue }]}>
-        {mode === 'dark' ? 'Light' : 'Dark'}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
 function AppNavigator() {
   const { colors } = useTheme();
   const navTheme = {
@@ -99,7 +86,6 @@ function AppNavigator() {
           <Stack.Screen name="Simulator" component={Simulator} />
         </Stack.Navigator>
         <Disclaimer />
-        <ThemeToggle />
       </View>
     </NavigationContainer>
   );
@@ -151,18 +137,4 @@ const styles = StyleSheet.create({
     fontSize: 10,
     textAlign: 'center',
   },
-  toggle: {
-    position: 'absolute',
-    top: 54,
-    right: 14,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  toggleIcon: { fontSize: 13 },
-  toggleLabel: { fontSize: 12, fontWeight: '700' },
 });
