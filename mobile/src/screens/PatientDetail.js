@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity, TextInput } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
@@ -42,21 +42,48 @@ export default function PatientDetail({ route, navigation }) {
   const styles = buildStyles(colors);
   const [patient, setPatient] = useState(null);
   const [explanation, setExplanation] = useState(null);
+  const [recommendations, setRecommendations] = useState([]);
+  const [trajectory, setTrajectory] = useState(null);
+  const [notes, setNotes] = useState([]);
+  const [noteText, setNoteText] = useState('');
 
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-        const [p, e] = await Promise.all([
+        const [p, e, recs, traj, n] = await Promise.all([
           api.getPatient(patientId), api.getPatientExplanation(patientId),
+          api.getRecommendations(patientId).catch(() => ({ recommendations: [] })),
+          api.getTrajectory(patientId).catch(() => null),
+          api.getNotes(patientId).catch(() => ({ notes: [] })),
         ]);
-        if (active) { setPatient(p); setExplanation(e); }
+        if (active) {
+          setPatient(p);
+          setExplanation(e);
+          setRecommendations(recs.recommendations || []);
+          setTrajectory(traj);
+          setNotes(n.notes || []);
+        }
       } catch (e) {}
     };
     load();
     const interval = setInterval(load, 6000);
     return () => { active = false; clearInterval(interval); };
   }, [patientId]);
+
+  const handleAddNote = async () => {
+    if (!noteText.trim()) return;
+    try {
+      await api.addNote(patientId, noteText.trim(), 'Doctor');
+      setNoteText('');
+      const n = await api.getNotes(patientId);
+      setNotes(n.notes || []);
+    } catch (e) {}
+  };
+
+  const PRIORITY_COLORS = { CRITICAL: '#ef4444', HIGH: '#f97316', MEDIUM: '#eab308', LOW: '#6b7280' };
+  const PRIORITY_ORDER = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  const sortedRecs = [...recommendations].sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 4) - (PRIORITY_ORDER[b.priority] ?? 4));
 
   if (!patient) {
     return (
@@ -118,8 +145,11 @@ export default function PatientDetail({ route, navigation }) {
 
         <Text style={styles.sectionTitle}>Risk Trajectory</Text>
         <GlassCard style={styles.chartCard}>
-          {hasTrend ? (
-            <RiskSparkline data={riskHistory.map(r => r * 100)} color={color} />
+          {(trajectory?.risk_history?.length > 1 || riskHistory.length > 1) ? (
+            <RiskSparkline
+              data={(trajectory?.risk_history?.length > 1 ? trajectory.risk_history : riskHistory).map(r => r * 100)}
+              color={color}
+            />
           ) : (
             <Text style={styles.noTrend}>Collecting more observations…</Text>
           )}
@@ -152,6 +182,62 @@ export default function PatientDetail({ route, navigation }) {
           {(!explanation?.factors || explanation.factors.length === 0) && (
             <Text style={styles.noFactors}>No significant changes detected recently.</Text>
           )}
+        </GlassCard>
+
+        <Text style={styles.sectionTitle}>Recommended Actions</Text>
+        <GlassCard style={styles.recCard}>
+          {sortedRecs.length > 0 ? sortedRecs.map((r, i) => (
+            <View key={i} style={styles.recRow}>
+              <View style={[styles.recBadge, { backgroundColor: `${PRIORITY_COLORS[r.priority] || '#6b7280'}22` }]}>
+                <Text style={[styles.recBadgeText, { color: PRIORITY_COLORS[r.priority] || '#6b7280' }]}>
+                  {r.priority}
+                </Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recAction}>{r.action}</Text>
+                {r.rationale ? <Text style={styles.recRationale}>{r.rationale}</Text> : null}
+              </View>
+            </View>
+          )) : (
+            <Text style={styles.emptyText}>No recommendations at this time.</Text>
+          )}
+        </GlassCard>
+
+        <Text style={styles.sectionTitle}>Clinical Notes</Text>
+        <GlassCard style={styles.notesCard}>
+          {notes.length > 0 ? notes.map((n, i) => (
+            <View key={i} style={styles.noteRow}>
+              <View style={styles.noteHeader}>
+                <Text style={styles.noteAuthor}>{n.author}</Text>
+                <View style={[styles.sentimentTag, {
+                  backgroundColor: n.sentiment_label === 'Positive' ? 'rgba(34,197,94,0.12)'
+                    : n.sentiment_label === 'Negative' ? 'rgba(239,68,68,0.12)' : 'rgba(128,128,128,0.12)',
+                }]}>
+                  <Text style={[styles.sentimentText, {
+                    color: n.sentiment_label === 'Positive' ? '#22c55e'
+                      : n.sentiment_label === 'Negative' ? '#ef4444' : '#6b7280',
+                  }]}>{n.sentiment_label || 'Neutral'}</Text>
+                </View>
+              </View>
+              <Text style={styles.noteText}>{n.text}</Text>
+              <Text style={styles.noteTime}>{new Date(n.created_at).toLocaleString()}</Text>
+            </View>
+          )) : (
+            <Text style={styles.emptyText}>No clinical notes yet.</Text>
+          )}
+          <View style={styles.noteInputRow}>
+            <TextInput
+              style={styles.noteInput}
+              placeholder="Add a clinical note…"
+              placeholderTextColor={colors.textMuted}
+              value={noteText}
+              onChangeText={setNoteText}
+              multiline
+            />
+            <TouchableOpacity style={styles.noteAddBtn} onPress={handleAddNote}>
+              <Text style={styles.noteAddBtnText}>Add Note</Text>
+            </TouchableOpacity>
+          </View>
         </GlassCard>
 
         <GlassCard style={styles.actionCard}>
@@ -201,4 +287,27 @@ const buildStyles = (colors) => StyleSheet.create({
   noFactors: { color: colors.textMuted, fontSize: 13, textAlign: 'center', paddingVertical: 12 },
   actionCard: { padding: 16, marginTop: 16, borderColor: 'rgba(239,68,68,0.3)' },
   actionText: { color: '#f97316', fontSize: 14, fontWeight: '600', textAlign: 'center', lineHeight: 22 },
+  recCard: { padding: 16 },
+  recRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.glassBorder, gap: 10 },
+  recBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5, minWidth: 68, alignItems: 'center' },
+  recBadgeText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  recAction: { fontSize: 13, fontWeight: '600', color: colors.textPrimary },
+  recRationale: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
+  notesCard: { padding: 16 },
+  noteRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.glassBorder },
+  noteHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  noteAuthor: { fontSize: 13, fontWeight: '700', color: colors.textPrimary },
+  sentimentTag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5 },
+  sentimentText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  noteText: { fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
+  noteTime: { fontSize: 10, color: colors.textMuted, marginTop: 4 },
+  noteInputRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, marginTop: 12 },
+  noteInput: {
+    flex: 1, borderWidth: 1, borderColor: colors.glassBorder, borderRadius: 8,
+    padding: 10, fontSize: 13, color: colors.textPrimary, backgroundColor: colors.cardBg,
+    minHeight: 40, maxHeight: 80, textAlignVertical: 'top',
+  },
+  noteAddBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, backgroundColor: colors.accentCyan },
+  noteAddBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  emptyText: { color: colors.textMuted, fontSize: 13, textAlign: 'center', paddingVertical: 12 },
 });
