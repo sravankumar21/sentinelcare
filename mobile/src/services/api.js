@@ -17,6 +17,8 @@ export const api = {
   getPatientExplanation: (id) => request(`/patients/${id}/explanation`),
   getAlerts: () => request('/alerts'),
   acknowledgeAlert: (id) => request(`/alerts/${id}/acknowledge`, { method: 'POST' }),
+  registerDevice: (token, platform = 'android') =>
+    request('/devices/register', { method: 'POST', body: JSON.stringify({ token, platform }) }),
   simulateStart: (patientId, mode) =>
     request('/simulate/start', { method: 'POST', body: JSON.stringify({ patient_id: patientId, mode }) }),
   simulateStep: (patientId) =>

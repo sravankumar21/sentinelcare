@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "871486180854",
+    "project_id": "sentinelcare",
+    "storage_bucket": "sentinelcare.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:871486180854:android:a3e229d4d523d156c18bd7",
+        "android_client_info": {
+          "package_name": "com.sentinelcare.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBhEIFnUjm4a3Y7cNfrUzAQs2eeHoAYRw4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
