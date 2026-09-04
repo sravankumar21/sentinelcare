@@ -8,6 +8,7 @@ import CommandCenter from './src/screens/CommandCenter';
 import PatientDetail from './src/screens/PatientDetail';
 import Alerts from './src/screens/Alerts';
 import Simulator from './src/screens/Simulator';
+import RiskAnalyzer from './src/screens/RiskAnalyzer';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/services/api';
 
@@ -84,6 +85,7 @@ function AppNavigator() {
           <Stack.Screen name="PatientDetail" component={PatientDetail} />
           <Stack.Screen name="Alerts" component={Alerts} />
           <Stack.Screen name="Simulator" component={Simulator} />
+          <Stack.Screen name="RiskAnalyzer" component={RiskAnalyzer} />
         </Stack.Navigator>
         <Disclaimer />
       </View>

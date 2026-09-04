@@ -3,12 +3,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
 
 COPY backend ./backend
 COPY ml ./ml
-COPY data/cleaned.parquet ./data/cleaned.parquet
 COPY data/models ./data/models
 
 EXPOSE 8000

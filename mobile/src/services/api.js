@@ -28,4 +28,8 @@ export const api = {
   getSystemStatus: () => request('/system/status'),
   getRecommendations: (id) => request(`/patients/${id}/recommendations`),
   getTrajectory: (id) => request(`/patients/${id}/trajectory`),
+  riskAnalyze: (vitals) =>
+    request('/risk/analyze', { method: 'POST', body: JSON.stringify(vitals) }),
+  riskSimulate: (vitals) =>
+    request('/risk/simulate', { method: 'POST', body: JSON.stringify(vitals) }),
 };

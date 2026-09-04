@@ -4,7 +4,9 @@ import sys
 import json
 import pickle
 import random
+import logging
 import urllib.request
+import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -13,10 +15,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s %(message)s', datefmt='%H:%M:%S')
+logger = logging.getLogger("sentinelcare")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from ml.feature_engineering import add_temporal_features, get_feature_columns, VITAL_SIGNALS
 
-app = FastAPI(title="SentinelCare API", version="1.0.0")
+app = FastAPI(title="SentinelCare API", version="1.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
@@ -59,13 +64,20 @@ ALERT_THRESHOLD = 0.50
 def load_model():
     global model, feature_cols
     model_path = os.path.join(MODELS_DIR, 'best_model.pkl')
-    if os.path.exists(model_path):
-        with open(model_path, 'rb') as f:
-            model = pickle.load(f)
     features_path = os.path.join(MODELS_DIR, 'feature_columns.json')
-    if os.path.exists(features_path):
-        with open(features_path) as f:
-            feature_cols = json.load(f)
+    try:
+        if os.path.exists(model_path):
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+            logger.info("[INFO] ML model loaded successfully: %s", type(model).__name__)
+        else:
+            logger.warning("[WARN] Model file not found at %s", model_path)
+        if os.path.exists(features_path):
+            with open(features_path) as f:
+                feature_cols = json.load(f)
+            logger.info("[INFO] Feature columns loaded: %d features", len(feature_cols))
+    except Exception as e:
+        logger.error("[ERROR] Failed to load model: %s\n%s", e, traceback.format_exc())
 
 
 def get_risk_status(prob):
@@ -130,6 +142,7 @@ def predict_risk(obs_df):
     if obs_df is None or len(obs_df) == 0:
         return 0.05, get_risk_status(0.05)
     if model is None or feature_cols is None:
+        logger.warning("[WARN] Model not loaded, returning default risk")
         return 0.05, get_risk_status(0.05)
     try:
         eng = add_temporal_features(obs_df)
@@ -137,8 +150,10 @@ def predict_risk(obs_df):
         last = last.fillna(0)
         last = last.replace([np.inf, -np.inf], 0)
         prob = float(model.predict_proba(last)[0, 1])
+        logger.info("[INFO] Model prediction: %.4f → %s", prob, get_risk_status(prob))
         return round(prob, 4), get_risk_status(prob)
-    except Exception:
+    except Exception as e:
+        logger.error("[ERROR] predict_risk failed: %s\n%s", e, traceback.format_exc())
         return 0.05, get_risk_status(0.05)
 
 
@@ -354,11 +369,43 @@ def init_demo_patients():
     db['system_stats']['patients_monitored'] = len(db['patients'])
 
 
+def _generate_initial_alerts():
+    """Generate alerts for patients that start above the alert threshold."""
+    for pid, p in db['patients'].items():
+        if p['risk_probability'] >= ALERT_THRESHOLD:
+            db['alert_counter'] += 1
+            recs = recommend_actions(p['vitals'])
+            alert = {
+                'alert_id': db['alert_counter'],
+                'patient_id': int(pid),
+                'bed': p['bed'],
+                'ward': p['ward'],
+                'hospital_id': p.get('hospital_id'),
+                'hospital_name': p.get('hospital_name'),
+                'risk_probability': p['risk_probability'],
+                'previous_risk': round(p['risk_probability'] * 0.9, 4),
+                'risk_change': round(p['risk_probability'] * 0.1, 4),
+                'vitals_snapshot': p['vitals'].copy(),
+                'recommendations': recs,
+                'assigned_doctor_id': assign_doctor_to_alert({'patient_id': int(pid), 'risk_probability': p['risk_probability']}),
+                'escalated': False,
+                'status': 'PENDING',
+                'created_at': datetime.now().isoformat(),
+                'message': f"Elevated deterioration risk detected ({round(p['risk_probability']*100,1)}%). Clinical review recommended."
+            }
+            db['alerts'].append(alert)
+            state = db['simulator_state'].get(pid, {})
+            state['last_alerted_risk'] = p['risk_probability']
+            logger.info("[INFO] Initial alert generated: ALERT-%d for patient %d (%.1f%%)", db['alert_counter'], pid, p['risk_probability']*100)
+    db['system_stats']['alerts_generated'] = len(db['alerts'])
+
+
 @app.on_event("startup")
 async def startup():
     load_model()
     init_demo_patients()
     seed_hospitals_doctors()
+    _generate_initial_alerts()
     # Restore any persisted state that survived (devices, alerts, sim history).
     saved = _load_state()
     if saved:
@@ -518,12 +565,26 @@ async def get_patient(patient_id: int):
         raise HTTPException(status_code=404, detail="Patient not found")
     state = db['simulator_state'].get(patient_id, {})
     trend, arrow = get_trend(patient_id)
+    obs = state.get('obs_df', [])
+    vitals_history = [
+        {
+            'hour': row.get('hour_from_admission'),
+            'heart_rate': row.get('heart_rate'),
+            'spo2_pct': row.get('spo2_pct'),
+            'respiratory_rate': row.get('respiratory_rate'),
+            'systolic_bp': row.get('systolic_bp'),
+            'diastolic_bp': row.get('diastolic_bp'),
+            'temperature_c': row.get('temperature_c'),
+        }
+        for row in obs
+    ]
     return {
         **p,
         'risk_trend': trend,
         'trend_arrow': arrow,
         'risk_history': state.get('risk_history', []),
-        'obs_count': len(state.get('obs_df', []))
+        'vitals_history': vitals_history,
+        'obs_count': len(obs)
     }
 
 
@@ -774,6 +835,7 @@ async def simulate_step(req: SimulateStepRequest):
         raise HTTPException(status_code=404, detail="Patient not found")
 
     state = db['simulator_state'][req.patient_id]
+    logger.info("[INFO] Observation received — Patient: %d, deteriorating: %s", req.patient_id, state.get('deteriorating', False))
     last = state['obs_df'][-1]
 
     # Build next observation; if deteriorating, apply a coordinated, realistic
@@ -842,8 +904,12 @@ async def simulate_step(req: SimulateStepRequest):
     p['last_update'] = datetime.now().isoformat()
     trend, arrow = get_trend(req.patient_id)
 
-    new_alert = risk >= ALERT_THRESHOLD and prev_risk < ALERT_THRESHOLD
+    new_alert = False
     push_result = None
+    last_alerted_risk = state.get('last_alerted_risk', 0.0)
+    if risk >= ALERT_THRESHOLD:
+        if prev_risk < ALERT_THRESHOLD or last_alerted_risk == 0.0 or (risk - last_alerted_risk) >= 0.10:
+            new_alert = True
     if new_alert:
         db['alert_counter'] += 1
         recs = recommend_actions(p['vitals'])
@@ -879,7 +945,10 @@ async def simulate_step(req: SimulateStepRequest):
                         'alert_id': a['alert_id'], 'patient_id': a['patient_id'],
                         'at': datetime.now().isoformat(), 'reason': a['escalation_reason']
                     })
+        state['last_alerted_risk'] = risk
+        logger.info("[INFO] Alert created: ALERT-%d for patient %d (risk %.1f%%)", db['alert_counter'], req.patient_id, risk*100)
         push_result = send_push_notification(alert)
+        logger.info("[INFO] Push notification result: %s", push_result)
     db['system_stats']['observations_processed'] += 1
     _persist_state()
 
@@ -975,3 +1044,232 @@ async def get_dashboard_summary():
                           'status': p['risk_status']} for p in sorted(ward_patients, key=lambda x: -x['risk_probability'])]
         }
     return summary
+
+
+# ---------- Risk Analysis (manual input) ----------
+
+class RiskAnalyzeRequest(BaseModel):
+    spo2_pct: float = 97.0
+    heart_rate: float = 82.0
+    respiratory_rate: float = 18.0
+    temperature_c: float = 37.0
+    systolic_bp: float = 122.0
+    diastolic_bp: float = 78.0
+    oxygen_flow: float = 0.0
+    oxygen_device: str = "none"
+    lactate: float = 1.0
+    wbc_count: float = 8.0
+    creatinine: float = 0.9
+    crp_level: float = 5.0
+    hemoglobin: float = 13.0
+    age: int = 60
+    gender: str = "M"
+    admission_type: str = "ED"
+    comorbidity_index: int = 0
+    sepsis_risk_score: float = 0.1
+    nurse_alert: int = 0
+    mobility_score: float = 3.0
+    baseline_risk_score: float = 0.05
+    los_hours: float = 24.0
+
+
+def _build_synthetic_history(vitals: dict, n_obs: int = 6) -> list:
+    """Create a synthetic observation history from current vitals for model inference."""
+    rng = random.Random(42)
+    rows = []
+    base_hour = max(0, int(vitals.get('los_hours', 24)) - n_obs)
+    for i in range(n_obs):
+        row = dict(vitals)
+        row['hour_from_admission'] = base_hour + i
+        row['patient_id'] = -1
+        jitter = 0.02 * (i - n_obs // 2)
+        for key in ['spo2_pct', 'heart_rate', 'respiratory_rate', 'temperature_c',
+                     'systolic_bp', 'diastolic_bp', 'oxygen_flow', 'lactate',
+                     'wbc_count', 'creatinine', 'crp_level', 'hemoglobin']:
+            val = float(row.get(key, 0))
+            row[key] = round(val * (1 + jitter * rng.uniform(-0.5, 0.5)), 2)
+        row.setdefault('nurse_alert', 0)
+        row.setdefault('mobility_score', 3.0)
+        row.setdefault('sepsis_risk_score', 0.1)
+        row.setdefault('baseline_risk_score', 0.05)
+        row.setdefault('age', 60)
+        row.setdefault('gender', 'M')
+        row.setdefault('admission_type', 'ED')
+        row.setdefault('comorbidity_index', 0)
+        rows.append(row)
+    return rows
+
+
+def _compute_explanation_from_vitals(vitals: dict, risk: float) -> list:
+    """Compute model contributor explanations from vitals changes."""
+    factors = []
+    thresholds = [
+        ('SpO₂', vitals.get('spo2_pct', 100), 95, -1),
+        ('Heart Rate', vitals.get('heart_rate', 75), 100, 1),
+        ('Respiratory Rate', vitals.get('respiratory_rate', 16), 22, 1),
+        ('Blood Pressure', vitals.get('systolic_bp', 120), 100, -1),
+        ('Temperature', vitals.get('temperature_c', 37), 38, 1),
+        ('Lactate', vitals.get('lactate', 1.0), 2.0, 1),
+        ('WBC Count', vitals.get('wbc_count', 8), 12, 1),
+        ('CRP Level', vitals.get('crp_level', 5), 50, 1),
+    ]
+    for name, value, threshold, direction in thresholds:
+        delta = abs(value - threshold)
+        if delta > 0.01:
+            is_adverse = ((value - threshold) * direction) > 0
+            if is_adverse:
+                impact = 'high' if delta > (threshold * 0.2) else ('moderate' if delta > (threshold * 0.08) else 'low')
+                direction_label = 'up' if value > threshold else 'down'
+                factors.append({
+                    'feature': name, 'direction': direction_label,
+                    'magnitude': round(delta, 1), 'impact': impact
+                })
+    factors.sort(key=lambda x: {'high': 3, 'moderate': 2, 'low': 1}[x['impact']], reverse=True)
+    return factors[:6]
+
+
+@app.post("/api/risk/analyze")
+async def risk_analyze(req: RiskAnalyzeRequest):
+    """Analyze risk from manually entered patient observations using the real ML model."""
+    logger.info("[INFO] Risk analysis requested — SpO2: %.1f, HR: %.1f, RR: %.1f", req.spo2_pct, req.heart_rate, req.respiratory_rate)
+    vitals = req.model_dump()
+    history = _build_synthetic_history(vitals)
+    obs_df = pd.DataFrame(history)
+    risk, status = predict_risk(obs_df)
+    factors = _compute_explanation_from_vitals(vitals, risk)
+    recs = recommend_actions(vitals)
+    logger.info("[INFO] Risk analysis result: %.1f%% — %s", risk * 100, status)
+    return {
+        'risk_probability': risk,
+        'risk_status': status,
+        'risk_color': get_risk_color(status),
+        'risk_percentage': round(risk * 100, 1),
+        'model_version': 'RF-Calibrated-v1',
+        'analysis_timestamp': datetime.now().isoformat(),
+        'factors': factors,
+        'recommendations': recs,
+        'vitals': {
+            'spo2_pct': req.spo2_pct,
+            'heart_rate': req.heart_rate,
+            'respiratory_rate': req.respiratory_rate,
+            'temperature_c': req.temperature_c,
+            'systolic_bp': req.systolic_bp,
+            'diastolic_bp': req.diastolic_bp,
+        },
+        'input': vitals,
+    }
+
+
+class RiskSimulateRequest(BaseModel):
+    patient_id: Optional[int] = None
+    spo2_pct: float = 97.0
+    heart_rate: float = 82.0
+    respiratory_rate: float = 18.0
+    temperature_c: float = 37.0
+    systolic_bp: float = 122.0
+    diastolic_bp: float = 78.0
+    oxygen_flow: float = 0.0
+    oxygen_device: str = "none"
+    lactate: float = 1.0
+    wbc_count: float = 8.0
+    creatinine: float = 0.9
+    crp_level: float = 5.0
+    hemoglobin: float = 13.0
+    age: int = 60
+    gender: str = "M"
+    admission_type: str = "ED"
+    comorbidity_index: int = 0
+    sepsis_risk_score: float = 0.1
+    nurse_alert: int = 0
+    mobility_score: float = 3.0
+    baseline_risk_score: float = 0.05
+    los_hours: float = 24.0
+
+
+@app.post("/api/risk/simulate")
+async def risk_simulate(req: RiskSimulateRequest):
+    """Simulate a manual risk scenario: update a real patient with user-entered values,
+    run the full risk pipeline, generate alert and notification if threshold crossed."""
+    patient_id = req.patient_id
+    if patient_id is None:
+        # Pick the patient with the lowest risk for the demo
+        patient_id = min(db['patients'].keys(), key=lambda k: db['patients'][k]['risk_probability'])
+    p = db['patients'].get(patient_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    logger.info("[INFO] Risk simulate for patient %d — updating with user values", patient_id)
+    vitals = req.model_dump()
+    history = _build_synthetic_history(vitals)
+    obs_df = pd.DataFrame(history)
+    risk, status = predict_risk(obs_df)
+
+    state = db['simulator_state'][patient_id]
+    prev_risk = p['risk_probability']
+    state['obs_df'] = history
+    state['next_hour'] = int(history[-1].get('hour_from_admission', 0)) + 1
+    state['risk_history'] = _compute_risk_history(obs_df)
+    state['deteriorating'] = False
+
+    p['vitals'] = {
+        'heart_rate': float(vitals['heart_rate']),
+        'respiratory_rate': float(vitals['respiratory_rate']),
+        'spo2_pct': float(vitals['spo2_pct']),
+        'temperature_c': float(vitals['temperature_c']),
+        'systolic_bp': float(vitals['systolic_bp']),
+        'diastolic_bp': float(vitals['diastolic_bp']),
+    }
+    p['risk_probability'] = risk
+    p['risk_status'] = status
+    p['last_update'] = datetime.now().isoformat()
+
+    new_alert = False
+    alert_data = None
+    if risk >= ALERT_THRESHOLD:
+        db['alert_counter'] += 1
+        recs = recommend_actions(p['vitals'])
+        assigned_doc = assign_doctor_to_alert({'patient_id': int(patient_id), 'risk_probability': risk})
+        alert_data = {
+            'alert_id': db['alert_counter'],
+            'patient_id': int(patient_id),
+            'bed': p['bed'],
+            'ward': p['ward'],
+            'hospital_id': p.get('hospital_id'),
+            'hospital_name': p.get('hospital_name'),
+            'risk_probability': risk,
+            'previous_risk': round(prev_risk, 4),
+            'risk_change': round(risk - prev_risk, 4),
+            'vitals_snapshot': p['vitals'].copy(),
+            'recommendations': recs,
+            'assigned_doctor_id': assigned_doc,
+            'escalated': False,
+            'status': 'PENDING',
+            'created_at': datetime.now().isoformat(),
+            'message': f"Manual simulation: elevated deterioration risk ({round(risk*100,1)}%). Clinical review recommended."
+        }
+        db['alerts'].insert(0, alert_data)
+        new_alert = True
+        state['last_alerted_risk'] = risk
+        db['system_stats']['alerts_generated'] += 1
+        logger.info("[INFO] ALERT CREATED: ALERT-%d for patient %d — risk %.1f%%", db['alert_counter'], patient_id, risk*100)
+        send_push_notification(alert_data)
+
+    db['system_stats']['observations_processed'] += 1
+    _persist_state()
+
+    factors = _compute_explanation_from_vitals(vitals, risk)
+    recs = recommend_actions(p['vitals'])
+    return {
+        'patient_id': patient_id,
+        'risk_probability': risk,
+        'risk_status': status,
+        'risk_percentage': round(risk * 100, 1),
+        'risk_color': get_risk_color(status),
+        'vitals': p['vitals'],
+        'new_alert': new_alert,
+        'alert': alert_data,
+        'factors': factors,
+        'recommendations': recs,
+        'risk_history': state.get('risk_history', []),
+        'trend': get_trend(patient_id),
+    }

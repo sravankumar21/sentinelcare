@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet,
+  View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
 import { PatientCard } from '../components/PatientCard';
@@ -16,6 +16,7 @@ export default function CommandCenter({ navigation }) {
   const [summary, setSummary] = useState({});
   const [alerts, setAlerts] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const lastAlertCount = useRef(0);
 
@@ -28,6 +29,7 @@ export default function CommandCenter({ navigation }) {
       setSummary(s);
       setAlerts(a.alerts);
       setOffline(false);
+      setLoading(false);
 
       if (a.alerts.length > lastAlertCount.current) {
         const newAlerts = a.alerts.slice(0, a.alerts.length - lastAlertCount.current);
@@ -83,10 +85,19 @@ export default function CommandCenter({ navigation }) {
           </GlassCard>
         )}
 
+        {loading ? (
+          <GlassCard style={{ padding: 40, alignItems: 'center' }}>
+            <ActivityIndicator color={colors.accentCyan} size="large" />
+            <Text style={{ color: colors.textMuted, marginTop: 12, fontSize: 13 }}>Connecting to SentinelCare backend...</Text>
+            <Text style={{ color: colors.textMuted, marginTop: 4, fontSize: 11 }}>Loading patient data and ML model predictions</Text>
+          </GlassCard>
+        ) : (
+        <>
         <View style={styles.hero}>
           <View style={styles.heroRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.greeting}>SentinelCare</Text>
+              <Text style={styles.purposeText}>AI-Powered Early Warning System</Text>
               <Text style={styles.subtitle}>
                 {summary.total_patients ?? 0} patients monitored · {summary.critical ?? 0} critical
               </Text>
@@ -145,6 +156,9 @@ export default function CommandCenter({ navigation }) {
         <GlassCard style={styles.quickActions}>
           <Text style={styles.sectionTitle}>Quick Actions</Text>
           <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('RiskAnalyzer')}>
+              <Text style={styles.actionText}>Test Risk Analysis</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Simulator')}>
               <Text style={styles.actionText}>▶ Run Simulator</Text>
             </TouchableOpacity>
@@ -153,6 +167,8 @@ export default function CommandCenter({ navigation }) {
             </TouchableOpacity>
           </View>
         </GlassCard>
+        </>
+        )}
       </ScrollView>
     </Background>
   );
@@ -166,6 +182,7 @@ const buildStyles = (colors) => StyleSheet.create({
   hero: { marginBottom: 18 },
   heroRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   greeting: { fontSize: 24, fontWeight: '800', color: colors.textPrimary },
+  purposeText: { fontSize: 13, color: colors.accentCyan, marginTop: 2, fontWeight: '600' },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
   priorityText: { fontSize: 13, color: colors.textSecondary, marginTop: 6 },
   statsRow: { flexDirection: 'row', gap: 8, marginBottom: 18 },
