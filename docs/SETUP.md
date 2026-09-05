@@ -87,24 +87,31 @@ Whether it works from the store or you sideload the APK, remember **which Expo G
 
 ---
 
-## Step 3 — Put the project on your computer
+## Step 3 — Get the project onto your computer (clone or download)
 
-You need all the SentinelCare files on your computer. Two ways:
+You need all the SentinelCare files on your computer. Choose **one** of the two ways below.
 
-**Easiest (recommended for first time):**
-1. Download the project as a ZIP file (from GitHub → **Code ▾ → Download ZIP**).
-2. Unzip it. You should see a folder called `SentinelCare` with a `README.md` inside.
-3. Open a terminal and go into that folder. The fastest way on **macOS** is to type `cd `,
-   then drag the folder onto the terminal window, then press Enter.
+**Way A — Clone with Git (recommended).** Open a terminal, go into the folder where you
+want the project to live, and run:
 
-**If you are comfortable with Git:**
 ```bash
-git clone <repository-url>
-cd SentinelCare
+git clone https://github.com/sravankumar21/sentinelcare.git
+cd sentinelcare
 ```
 
-From here on, "the project folder" means the folder that contains `README.md`, `backend/`,
-and `mobile/`.
+> If `git` isn't installed, install it first from <https://git-scm.com> (or use Way B).
+
+**Way B — Download as a ZIP (no Git needed):**
+1. In a browser, open <https://github.com/sravankumar21/sentinelcare>.
+2. Click the green **Code ▸** button → **Download ZIP**.
+3. Unzip the download. The unzipped folder is called `sentinelcare-master` (or
+   `sentinelcare`). Rename it to `sentinelcare` if you like.
+4. Open a terminal and go into that folder. The fastest way on **macOS** is to type `cd `,
+   then drag the folder onto the terminal window, then press Enter.
+
+Either way, you should end up inside the **project folder** — the folder that contains
+`README.md`, `backend/`, and `mobile/`. From here on, "the project folder" means exactly
+that.
 
 ---
 

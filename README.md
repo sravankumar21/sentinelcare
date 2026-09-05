@@ -15,6 +15,11 @@ moment a patient's risk of deterioration starts to climb.
 > Everything you see is built from either real (but anonymised/old) hospital
 > observations or clearly-labelled simulations. See [What is real and what is simulated](#what-is-real-and-what-is-simulated).
 
+> **New here?** If you're about to present or pitch this project, start with
+> **[docs/STORY.md](docs/STORY.md)** — it tells the "why" as a short narrative you can
+> speak in 2–3 minutes. For the quickest practical handover, read
+> **[docs/TLDR.md](docs/TLDR.md)** (one page: clone, run, see, test, understand).
+
 ---
 
 ## What problem does it solve?
@@ -137,7 +142,9 @@ For the full architecture, API list, and ML details, see **[docs/TECHNICAL.md](d
 ```
 SentinelCare/
 ├── README.md                 ← you are here
-├── docs/                     ← setup, demo, user guide, troubleshooting, technical
+├── docs/                     ← setup, story, demo, user guide, troubleshooting, technical
+│   ├── TLDR.md               ← 1-page client handover: clone, run, see, test, understand
+│   ├── STORY.md              ← the narrative "why" behind the project (great for pitching)
 │   ├── SETUP.md              ← install everything and run it
 │   ├── DEMO.md               ← step-by-step demonstration script
 │   ├── USER_GUIDE.md         ← what every screen does
@@ -168,6 +175,8 @@ SentinelCare/
 
 | Guide | Audience | What it covers |
 |---|---|---|
+| **[TL;DR — client handover](docs/TLDR.md)** | Everyone | The whole project on one page: clone, run, see, test, understand |
+| **[The story](docs/STORY.md)** | Presenters | A narrative explainer (the "why") for pitching or introducing the idea |
 | **[Setup guide](docs/SETUP.md)** | Everyone | Everything you need to install and run the project for the first time |
 | **[Demo guide](docs/DEMO.md)** | Presenters | A speaker-ready walkthrough of the full demonstration |
 | **[User guide](docs/USER_GUIDE.md)** | Everyone | Every screen and feature explained in plain language |
