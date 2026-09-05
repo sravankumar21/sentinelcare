@@ -1,146 +1,204 @@
 # SentinelCare
 
-An **AI early-warning system for in-patient deterioration** — a research/educational prototype that predicts `deterioration_next_12h` from frequently-sampled hospital observations, serves real-time risk via a FastAPI backend, and surfaces it through dark glassmorphism web and mobile (React Native / Expo) dashboards with configurable risk bands and clinical-alert workflows.
+**AI-Powered Early Warning System for Hospital Deterioration Risk**
 
-> **Medical safety notice:** SentinelCare is a research and educational prototype using simulated clinical data. Risk estimates are **not** medical diagnoses and must not be used independently for clinical decision-making. Any high-risk output is accompanied by "Clinical review recommended."
+SentinelCare is a research prototype that helps hospital staff spot patients who are
+quietly getting worse — before it becomes an emergency. It watches a patient's vitals,
+uses a machine-learning model trained on **real hospital data**, and raises an alert the
+moment a patient's risk of deterioration starts to climb.
 
----
-
-## System overview
-
-```
-                         ┌──────────────────────────────┐
-  Hugging Face dataset   │  ml/ (offline)               │
-  hospital-deterioration │  clean → split → features    │
-        │                │  → train/calibrate → eval    │
-        ▼                └──────────────┬───────────────┘
-  data/engineered.parquet               │  artifacts (pkl/json)
-                                        ▼
-                          ┌──────────────────────────────┐
-                          │  backend/ FastAPI app.py     │
-                          │  predict_risk() (real path)  │
-                          │  /patients /alerts /simulate │
-                          └──────────────┬───────────────┘
-                                         │  /api (JSON)
-                    ┌────────────────────┼────────────────────┐
-                    ▼                    ▼                    ▼
-              frontend/ (web)        mobile/ (Expo)      tests/ (pytest)
-```
-
-The simulator drives a live, in-memory demo hospital. Crucially, every risk score is computed by the **real inference pipeline** (`backend/app.py::predict_risk()` → `add_temporal_features()` → `model.predict_proba()` on the latest observation), never by a fake/fuzzed path.
+> **Please read this first.** SentinelCare is an **educational / research prototype**.
+> It is **not** a replacement for doctors or nurses, and it is **not** a validated
+> medical device. It is a demonstration of how AI could support a hospital early-warning
+> system. Risk scores must never be used to make clinical decisions.
+>
+> Everything you see is built from either real (but anonymised/old) hospital
+> observations or clearly-labelled simulations. See [What is real and what is simulated](#what-is-real-and-what-is-simulated).
 
 ---
 
-## Usage
+## What problem does it solve?
 
-### 1. Backend (FastAPI)
+In a real hospital, the signs that a patient is deteriorating often appear **hours**
+before the emergency: oxygen drops, the heart beats faster, blood pressure starts to
+fall. By the time the alarm is obvious, the window for early treatment may be gone.
 
-```bash
-pip install -r requirements.txt
-python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000
-```
+SentinelCare demonstrates how this could work:
 
-Health check: `curl http://localhost:8000/api/system/status`
-
-### 2. Web dashboard
-
-```bash
-cd frontend
-npm install
-npm start        # Recharts SPA, proxies /api on localhost:8000
-```
-
-### 3. Mobile app (Expo / React Native)
-
-```bash
-cd mobile
-npm install
-npx expo start   # press i (iOS sim) / a (Android) / w (web)
-```
-
-> On a physical device set `API_URL` in `mobile/src/theme.js` to your machine's LAN IP (e.g. `http://192.168.1.10:8000/api`). `localhost` works for simulators/web only.
-
-### 4. Tests
-
-```bash
-python -m pytest tests/ -q
-```
+1. A patient's vitals (oxygen, heart rate, breathing rate, temperature, blood pressure)
+   are monitored continuously.
+2. A machine-learning model, trained on real hospital deterioration records, computes a
+   **risk score** (0% – 100%) for each patient.
+3. When a patient's risk crosses an alert threshold, an **alert** is raised, a doctor is
+   assigned, and recommended next steps are generated.
+4. Staff can see every patient's risk at a glance, understand *why* a patient was flagged,
+   and confirm ("acknowledge") each alert.
 
 ---
 
-## API reference
+## The system at a glance
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/patients` | All monitored patients with live risk + vitals |
-| GET | `/api/patients/{id}` | Single patient detail + prediction factors |
-| GET | `/api/patients/{id}/timeline` | Vitals + risk history series |
-| GET | `/api/patients/{id}/explanation` | Top SHAP-style risk drivers |
-| GET | `/api/alerts` | Generated alerts |
-| POST | `/api/alerts/{id}/acknowledge` | Acknowledge an alert |
-| POST | `/api/simulate/start` | Begin a simulation run (`telemetry` / `deteriorate`) |
-| POST | `/api/simulate/step` | Advance one hour; recomputes real risk |
-| POST | `/api/simulate/reset` | Reset a patient to its seeded history |
-| GET | `/api/model/metrics` | Held-out test + validation metrics, ROC/PR curves, calibration, lead time |
-| GET | `/api/system/status` | Runtime status + alert counter |
-| GET | `/api/dashboard/summary` | Risk-band counts across the hospital |
+SentinelCare is two pieces of software that talk to each other over your Wi-Fi:
+
+| Piece | What it is | Where it lives |
+|---|---|---|
+| **The brain (backend)** | A server that holds the patient data, runs the AI model, and creates alerts | Runs on the computer doing the demo |
+| **The app (mobile)** | The doctor's/nurse's view on a phone — dashboards, alerts, simulator, risk analyzer | Runs inside the **Expo Go** app on an Android phone |
+
+You control the demo from the **phone app**. The computer runs the backend silently in the background.
 
 ---
 
-## Risk bands & alerting
+## Quick start (3 steps)
 
-Risk bands are configurable in `backend/app.py`:
+Full, beginner-friendly instructions are in **[docs/SETUP.md](docs/SETUP.md)** with every detail.
 
-| Range | Status | Color |
-|-------|--------|-------|
-| 0–24% | STABLE | `#22c55e` |
-| 25–49% | WATCH | `#eab308` |
-| 50–74% | HIGH | `#f97316` |
-| 75–100% | CRITICAL | `#ef4444` |
+1. **Install the required software** on the demo computer —
+   [Python 3.12](https://www.python.org/downloads/), [Node.js](https://nodejs.org/), and the
+   **Expo Go** app on the phone.
+2. **Start the backend** (the "brain") on the computer, and **start the app** with Expo —
+   both commands are in the setup guide.
+3. **Scan the QR code** shown in the terminal with **Expo Go** on the phone.
 
-`ALERT_THRESHOLD = 0.50` — crossing it fires an alert (PENDING → ACKNOWLEDGED, mirrored to mobile push via `expo-notifications`), with the "Clinical review recommended" guidance.
+That's it. The app loads ~16 real patient profiles and you can run the full demonstration.
 
 ---
 
-## Repository layout
+## What can you do with it?
+
+- **See every patient's risk at a glance** (Home screen) — colour-coded dashboard, priority
+  queues, live risk bars and trend arrows.
+- **Drill into one patient** (Patient Detail) — full vitals, an easy-to-read **risk bar**,
+  *why* the patient was flagged, and recommended next steps for the care team.
+- **Alerts Centre** — every alert with Pending / Completed status, acknowledge alerts,
+  or clear the whole list.
+- **Run Simulator** — pick a patient and "simulate" a deterioration over the next hours;
+  watch the risk climb in real time until the system raises an alert, vibrates the phone,
+  and notifies the assigned doctor.
+- **Test Risk Analysis** — type in any set of vitals (SpO₂, heart rate, labs, …) and watch
+  the AI model score the patient instantly, explain what pushed the risk up, and list
+  recommended actions. A "Use risky values" switch shows a high-risk example in one tap.
+- **Acknowledge alerts** with visible confirmation — alerts move from Pending to Completed.
+- **Reset** any time — puts every patient back to their original state for a clean demo.
+
+A ready-to-follow script is in **[docs/DEMO.md](docs/DEMO.md)** — the exact flow used to
+present SentinelCare at a college demo, from start to finish.
+
+---
+
+## Ideas for presenting the demo (10 minutes)
+
+If you have almost no time, this is the version that shows the most impact:
+
+1. Open the app → Home screen shows the dashboard and "patients requiring attention".
+2. Tap a **critical patient** (red) → see vitals, the risk bar, *why* they were flagged,
+   and recommended actions.
+3. Go to **Run Simulator** → pick a healthier patient → **Create Alert** → watch the risk
+   climb live, the phone vibrates, an alert banner drops in, and the alert appears in
+   Home → Alerts.
+4. Tap the banner to **acknowledge** it → it moves to Completed.
+5. Open **Test Risk Analysis** → tap "Use risky values" → **Analyze Risk** → see the model
+   score ~91% CRITICAL and explain why.
+
+Step-by-step speaker notes for this flow are in **[docs/DEMO.md](docs/DEMO.md)**.
+
+---
+
+## What is real and what is simulated
+
+SentinelCare deliberately mixes three layers. Each is clearly labelled in this project:
+
+| Layer | What it is | Notes |
+|---|---|---|
+| **Real** | The **AI models** are trained on a real hospital deterioration dataset (~418,000 observations of ~10,000 patients). The **16 patient profiles** in the demo are real patients drawn from that same dataset (their actual last-12-hours of observations). | See the ML chapter in [docs/TECHNICAL.md](docs/TECHNICAL.md). |
+| **Simulated** | The **Run Simulator** feature generates future observations for a patient (as if they were monitored over the coming hours) so you can watch an alert being created live. The **bedside monitor** (ECG line) is a visual simulation. "Test Risk Analysis" lets you enter any values to try the model. Alerts, doctors, wards, and hospitals are simplified demo structures. | Labelled in-app: "Research / Demonstration Model", "LEAD II — DEMO". |
+| **Required for a real hospital** | Real-time connections to hospital monitoring/EMR systems, clinician authentication and roles, validated & locally-approved AI (regulatory clearance), real push-notification infrastructure, security and audit, and ongoing clinical review. | None of this is part of this prototype. |
+
+In short: **the AI is real, the living hospital is simulated.** Always present it that way.
+
+---
+
+## How it works under the hood (one paragraph)
+
+The mobile app polls the backend a few times a minute. The backend holds the patient data
+in memory, and every new observation goes through the same machine-learning pipeline:
+a time-series model and a point-in-time model each score the patient, and the higher score
+wins (a deliberate safety choice). If the score crosses 50% risk, an alert is created that
+snapshots the patient's vitals, assigns the least-busy doctor, and triggers the phone's
+alarm (vibration + banner). Everything works on your local Wi-Fi; nothing is sent to the
+internet.
+
+For the full architecture, API list, and ML details, see **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
+
+---
+
+## Project structure
 
 ```
-├── ml/                      # offline ML pipeline
-│   ├── data_processing.py       # clean, leakage-safe patient split
-│   ├── feature_engineering.py   # add_temporal_features(), get_feature_columns()
-│   └── model_training.py        # train LR+RF, calibrate, evaluate + lead time
-├── backend/app.py           # FastAPI server (real inference path, simulator, alerts)
+SentinelCare/
+├── README.md                 ← you are here
+├── docs/                     ← setup, demo, user guide, troubleshooting, technical
+│   ├── SETUP.md              ← install everything and run it
+│   ├── DEMO.md               ← step-by-step demonstration script
+│   ├── USER_GUIDE.md         ← what every screen does
+│   ├── TROUBLESHOOTING.md    ← common problems and fixes
+│   └── TECHNICAL.md          ← architecture, ML details, API reference
+├── backend/
+│   ├── app.py                ← the FastAPI server ("the brain")
+│   ├── demo_pool.json        ← the 16 real patient profiles
+│   └── build_demo_pool.py    ← tool that built the patient pool
+├── mobile/
+│   ├── App.js                ← Expo app entry point
+│   └── src/                  ← screens, components, services
+├── ml/
+│   ├── data_processing.py    ← load & clean the dataset
+│   ├── feature_engineering.py← build the time-series features
+│   ├── model_training.py     ← train & evaluate the temporal model
+│   └── train_static_model.py ← train & evaluate the point-in-time model
 ├── data/
-│   ├── dataset.parquet          # raw Hugging Face data
-│   ├── cleaned.parquet          # 417,866 dedup rows / 10,000 patients
-│   ├── engineered.parquet       # 134 features
-│   ├── patient_splits.json      # patient-level 70/15/15 split
-│   └── models/                  # best_model.pkl, feature_columns.json, results
-├── frontend/                # React + Recharts web dashboard
-├── mobile/                  # Expo React Native app (glassmorphism)
-│   └── src/{screens,components,services,theme.js}
-└── tests/test_pipeline.py   # feature-engineering + leakage + risk tests
+│   ├── dataset.parquet       ← raw real hospital dataset
+│   └── models/               ← trained models + evaluation results
+├── tests/                    ← automated tests (run with pytest)
+└── requirements.txt          ← Python packages needed by the backend
 ```
 
 ---
 
-## About the data & pipeline
+## Documentation index
 
-- **Dataset:** `hospital-deterioration` (Hugging Face). The 1.68M raw rows are interleaved duplicates; the **417,866 valid rows** are those with a non-null `deterioration_next_12h` (≈10,000 patients, ~5.4% positive).
-- **Split:** patient-level 70/15/15 — a patient's full trajectory lives in exactly one split, preventing future-information leakage between train and test.
-- **Features:** 134 engineered features (`add_temporal_features`) including rolling windows, hour-over-hour deltas, ratios (e.g. shock index, HR/RR), lab trends, oxygenation support, sepsis score, and encoded categoricals. `get_feature_columns()` excludes the target and all leakage columns.
-- **Models:** LogisticRegression and RandomForest, patient-grouped evaluation. The RandomForest (wrapped in `CalibratedClassifierCV(method='sigmoid')`) is selected and serialized as `best_model.pkl`.
+| Guide | Audience | What it covers |
+|---|---|---|
+| **[Setup guide](docs/SETUP.md)** | Everyone | Everything you need to install and run the project for the first time |
+| **[Demo guide](docs/DEMO.md)** | Presenters | A speaker-ready walkthrough of the full demonstration |
+| **[User guide](docs/USER_GUIDE.md)** | Everyone | Every screen and feature explained in plain language |
+| **[Troubleshooting](docs/TROUBLESHOOTING.md)** | Everyone | "It doesn't work" → what to check |
+| **[Technical overview](docs/TECHNICAL.md)** | Developers | Architecture, ML pipeline, dataset & model results, API reference, what's simulated vs. what a real deployment needs |
 
-### Held-out test metrics (RandomForest, calibrated)
+---
 
-| Metric | Value |
-|--------|-------|
-| Precision | 0.765 |
-| Recall | 0.588 |
-| F1 | 0.665 |
-| ROC-AUC | 0.953 |
-| PR-AUC | 0.688 |
+## Quick commands reference
 
-`GET /api/model/metrics` also exposes honest **alert lead-time** statistics: with the strict definition (first hour risk ≥ threshold must precede the first hour labeled deteriorating within the next 12h), only ~4.8% of deteriorated patients receive a *positive* lead. The model is a strong risk *discriminator* but is not consistently *early* under that strict window — documented rather than hidden.
+```bash
+# Terminal 1 — start the backend (from the backend/ folder)
+cd backend
+python3 -m uvicorn app:app --host 0.0.0.0 --port 8000
 
-> **Top model drivers** are lab/clinical trajectory features (`lactate_*`, `creatinine_*`, `sepsis_risk_score`, `oxygen_flow`, `nurse_alert`, `mobility_*`) rather than HR/SpO₂ alone. Consequently the simulator's deterioration drives these alongside vitals — vital-only drift is out-of-distribution and does not by itself elevate risk.
+# Terminal 2 — start the Expo app (from the mobile/ folder)
+cd mobile
+npx expo start
+# then scan the QR code with Expo Go on the same Wi-Fi
+```
+
+If the phone cannot connect, your computer's Wi-Fi IP address has changed — see
+[Step 6 & 7 of the setup guide](docs/SETUP.md#step-6-find-your-computers-address-on-the-wi-fi)
+(edit one line in `mobile/src/theme.js`).
+
+---
+
+## Disclaimer
+
+SentinelCare is an **educational and research prototype** for demonstrating AI-assisted
+hospital early-warning concepts. It uses simulated clinical workflows and a model trained
+on historical anonymised data. Risk estimates produced by this prototype are **not medical
+diagnoses** and must never be used for clinical decision-making. No warranty is provided,
+and no regulatory approval has been sought.
