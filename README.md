@@ -142,8 +142,9 @@ For the full architecture, API list, and ML details, see **[docs/TECHNICAL.md](d
 ```
 SentinelCare/
 ├── README.md                 ← you are here
-├── docs/                     ← setup, story, demo, user guide, troubleshooting, technical
+├── docs/                     ← the full documentation package (see table below)
 │   ├── PROJECT_REPORT.md     ← ready-to-submit college documentation (template-based)
+│   ├── VIVA.md               ← 25 likely viva questions with short ready answers
 │   ├── TLDR.md               ← 1-page client handover: clone, run, see, test, understand
 │   ├── STORY.md              ← the narrative "why" behind the project (great for pitching)
 │   ├── SETUP.md              ← install everything and run it
@@ -177,6 +178,7 @@ SentinelCare/
 | Guide | Audience | What it covers |
 |---|---|---|
 | **[Project report (college)](docs/PROJECT_REPORT.md)** | Students | A ready-to-submit report following a standard academic project template |
+| **[Viva prep](docs/VIVA.md)** | Students | 25 likely viva questions with short, ready-to-say answers |
 | **[TL;DR — client handover](docs/TLDR.md)** | Everyone | The whole project on one page: clone, run, see, test, understand |
 | **[The story](docs/STORY.md)** | Presenters | A narrative explainer (the "why") for pitching or introducing the idea |
 | **[Setup guide](docs/SETUP.md)** | Everyone | Everything you need to install and run the project for the first time |
