@@ -13,7 +13,6 @@ export const api = {
   getPatients: () => request('/patients'),
   getDashboard: () => request('/dashboard/summary'),
   getPatient: (id) => request(`/patients/${id}`),
-  getPatientTimeline: (id) => request(`/patients/${id}/timeline`),
   getPatientExplanation: (id) => request(`/patients/${id}/explanation`),
   getAlerts: () => request('/alerts'),
   acknowledgeAlert: (id) => request(`/alerts/${id}/acknowledge`, { method: 'POST' }),
@@ -24,12 +23,9 @@ export const api = {
   simulateStep: (patientId) =>
     request('/simulate/step', { method: 'POST', body: JSON.stringify({ patient_id: patientId, mode: 'deteriorate' }) }),
   simulateReset: (patientId) => request(`/simulate/reset?patient_id=${patientId}`, { method: 'POST' }),
-  getModelMetrics: () => request('/model/metrics'),
-  getSystemStatus: () => request('/system/status'),
   resetSystem: () => request('/system/reset', { method: 'POST' }),
   clearAlerts: () => request('/system/clear-alerts', { method: 'POST' }),
   getRecommendations: (id) => request(`/patients/${id}/recommendations`),
-  getTrajectory: (id) => request(`/patients/${id}/trajectory`),
   riskAnalyze: (vitals) =>
     request('/risk/analyze', { method: 'POST', body: JSON.stringify(vitals) }),
   riskSimulate: (vitals) =>

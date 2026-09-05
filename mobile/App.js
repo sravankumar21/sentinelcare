@@ -76,58 +76,6 @@ function Disclaimer() {
   );
 }
 
-let seenAlertIds = new Set();
-let baselineAlertId = null;
-
-async function ensureDeteriorationChannel() {
-  if (Platform.OS !== 'android') return;
-  try {
-    await Notifications.setNotificationChannelAsync('deterioration', {
-      name: 'Deterioration alerts',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 250, 250, 250],
-      sound: 'default',
-    });
-  } catch (e) {}
-}
-
-async function notifyForAlert(alert) {
-  if (!alert || alert.status !== 'PENDING' || seenAlertIds.has(`alert-${alert.alert_id}`)) return;
-  seenAlertIds.add(`alert-${alert.alert_id}`);
-  try {
-    await ensureDeteriorationChannel();
-    const perm = await Notifications.getPermissionsAsync();
-    if (!perm.granted) {
-      const req = await Notifications.requestPermissionsAsync();
-      if (!req.granted) {
-        showSnackbar(`Alert for ${alert.bed} — Ward ${alert.ward} (notifications blocked in settings)`);
-        return;
-      }
-    }
-    showSnackbar(`Alert created for ${alert.bed} — Ward ${alert.ward} · Notification sent`);
-    const vs = alert.vitals_snapshot || {};
-    const hr = Math.round(Number(vs.heart_rate) || 0);
-    const spo2 = Number(vs.spo2_pct);
-    const temp = Number(vs.temperature_c);
-    const pct = Math.round((alert.risk_probability || 0) * 100);
-    const vitalBits = [
-      hr ? `HR ${hr} bpm` : null,
-      Number.isFinite(spo2) ? `SpO₂ ${spo2.toFixed(1)}%` : null,
-      Number.isFinite(temp) ? `Temp ${temp.toFixed(1)}°C` : null,
-    ].filter(Boolean).join(' · ');
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: `PATIENT ${alert.patient_id} — ${alert.risk_status || 'HIGH RISK'} ${pct}%`,
-        body: `Bed ${alert.bed} · Ward ${alert.ward}${vitalBits ? ` · ${vitalBits}` : ''}. Patient is ${(alert.risk_status || 'HIGH RISK').toLowerCase()} — clinical review and acknowledgement required now.`,
-        sound: 'default',
-        channelId: 'deterioration',
-        data: { alert_id: alert.alert_id, patient_id: alert.patient_id },
-      },
-      trigger: { seconds: 1 },
-    });
-  } catch (e) {}
-}
-
 export default function App() {
   const notificationListener = useRef();
   const responseListener = useRef();

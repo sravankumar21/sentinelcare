@@ -58,15 +58,6 @@ def split_patients(df, train_ratio=0.70, val_ratio=0.15, seed=42):
     return train_pids, val_pids, test_pids
 
 
-def compute_patient_level_stats(df):
-    stats = df.groupby('patient_id').agg(
-        total_hours=('hour_from_admission', 'max'),
-        ever_deteriorated=(TARGET, 'max'),
-        n_observations=(TARGET, 'count')
-    ).reset_index()
-    return stats
-
-
 if __name__ == '__main__':
     print("Loading raw data...")
     df = load_raw()

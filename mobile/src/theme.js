@@ -30,11 +30,20 @@ export const STATUS_COLORS = {
 
 export const getStatusColor = (status) => STATUS_COLORS[status] || '#6b7280';
 
-// API base URL. Override per build with EXPO_PUBLIC_API_URL (e.g.
-// EXPO_PUBLIC_API_URL=https://sentinelcare-backend-ncwo.onrender.com/api)
-// so native builds can target the deployed backend without code changes.
-export const API_URL =
-  'http://192.168.31.123:8000/api';
+// API base URL for the SentinelCare backend.
+//
+// The app connects to a backend running on your local network. To point the
+// app at a different backend, change the value on the next line to your
+// computer's IP address (which must end with :8000/api). An example:
+//
+//   export const API_URL = 'http://192.168.1.50:8000/api';
+//
+// You can also override it without editing this file by starting Expo with:
+//
+//   EXPO_PUBLIC_API_URL=http://<your-ip>:8000/api npx expo start
+//
+// The override only works for builds that inline the variable at bundle time.
+export const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.31.123:8000/api';
 
 const ThemeContext = createContext({ mode: 'light', colors: palettes.light, toggle: () => {} });
 
