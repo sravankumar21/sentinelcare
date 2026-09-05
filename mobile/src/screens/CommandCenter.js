@@ -49,6 +49,8 @@ export default function CommandCenter({ navigation }) {
     .filter(p => ['HIGH', 'CRITICAL'].includes(p.risk_status))
     .sort((a, b) => b.risk_probability - a.risk_probability);
 
+  const pendingAlerts = (alerts || []).filter(a => a.status === 'PENDING');
+
   return (
     <Background>
       <ScrollView
@@ -109,25 +111,31 @@ export default function CommandCenter({ navigation }) {
         )}
 
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recent Alerts ({alerts.length})</Text>
+          <Text style={styles.sectionTitle}>Recent Alerts ({pendingAlerts.length})</Text>
           <TouchableOpacity onPress={() => navigation.navigate('Alerts')}>
             <Text style={styles.seeAll}>See all ›</Text>
           </TouchableOpacity>
         </View>
-        {alerts.slice(0, 3).map(a => (
-          <TouchableOpacity key={a.alert_id} onPress={() => navigation.navigate('PatientDetail', { patientId: a.patient_id })}>
-            <GlassCard style={[styles.alertCard, a.status === 'PENDING' && styles.alertPending]}>
-              <View style={[styles.alertDot, { backgroundColor: a.status === 'PENDING' ? '#ef4444' : '#22c55e' }]} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.alertTitle}>{a.bed} · Ward {a.ward}</Text>
-                <Text style={styles.alertMsg} numberOfLines={2}>{a.message}</Text>
-                <Text style={styles.alertTime}>
-                  {new Date(a.created_at).toLocaleTimeString()} · {a.status === 'COMPLETED' ? 'Completed' : a.status}
-                </Text>
-              </View>
-            </GlassCard>
-          </TouchableOpacity>
-        ))}
+        {pendingAlerts.length === 0 ? (
+          <GlassCard style={styles.emptyCard}>
+            <Text style={styles.emptyText}>No pending alerts — all clear</Text>
+          </GlassCard>
+        ) : (
+          pendingAlerts.slice(0, 3).map(a => (
+            <TouchableOpacity key={a.alert_id} onPress={() => navigation.navigate('PatientDetail', { patientId: a.patient_id })}>
+              <GlassCard style={[styles.alertCard, styles.alertPending]}>
+                <View style={[styles.alertDot, { backgroundColor: '#ef4444' }]} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.alertTitle}>{a.bed} · Ward {a.ward}</Text>
+                  <Text style={styles.alertMsg} numberOfLines={2}>{a.message}</Text>
+                  <Text style={styles.alertTime}>
+                    {new Date(a.created_at).toLocaleTimeString()} · PENDING
+                  </Text>
+                </View>
+              </GlassCard>
+            </TouchableOpacity>
+          ))
+        )}
 
         <GlassCard style={styles.quickActions}>
           <Text style={styles.sectionTitle}>Quick Actions</Text>

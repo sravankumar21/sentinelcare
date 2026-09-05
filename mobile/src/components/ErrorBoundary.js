@@ -8,18 +8,18 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 export default class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, message: null };
   }
 
-  static getDerivedStateFromError() {
-    return { hasError: true };
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error ? String(error.message || error) : null };
   }
 
   componentDidCatch(error, info) {
     console.error('[ErrorBoundary]', error, info);
   }
 
-  reset = () => this.setState({ hasError: false });
+  reset = () => this.setState({ hasError: false, message: null });
 
   render() {
     if (this.state.hasError) {
@@ -30,6 +30,9 @@ export default class ErrorBoundary extends React.Component {
             <Text style={styles.body}>
               Something went wrong while rendering this screen.
             </Text>
+            {this.state.message ? (
+              <Text style={styles.detail}>{this.state.message}</Text>
+            ) : null}
             <TouchableOpacity style={styles.btn} onPress={this.reset}>
               <Text style={styles.btnText}>Retry</Text>
             </TouchableOpacity>
@@ -50,6 +53,7 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 18, fontWeight: '800', color: '#0f172a' },
   body: { fontSize: 13, color: '#475569', marginTop: 8, textAlign: 'center' },
+  detail: { fontSize: 11, color: '#ef4444', marginTop: 10, textAlign: 'center' },
   btn: { marginTop: 18, paddingHorizontal: 28, paddingVertical: 10, borderRadius: 10, backgroundColor: '#2563eb' },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

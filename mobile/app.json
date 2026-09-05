@@ -30,6 +30,14 @@
         "projectId": "08ad090c-eded-4631-9e7f-85f6a73c51c4"
       }
     },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#ef4444"
+        }
+      ]
+    ],
     "owner": "sra1218"
   }
 }

@@ -1185,6 +1185,35 @@ async def get_system_status():
     }
 
 
+@app.post("/api/system/reset")
+async def system_reset():
+    """Reset the demo to a clean state: restore patients to their original pool
+    profile, clear simulator history and all alerts, and regenerate the standard
+    initial alerts. Keeps registered device tokens so notifications keep working."""
+    db['alerts'].clear()
+    db['alert_counter'] = 0
+    db['escalation_log'] = []
+    db['simulator_state'].clear()
+    init_demo_patients()
+    seed_hospitals_doctors()
+    _generate_initial_alerts()
+    db['system_stats'].update({
+        'observations_processed': 0,
+        'alerts_generated': len(db['alerts']),
+        'push_sent': 0,
+        'patients_monitored': len(db['patients']),
+        'last_update': datetime.now().isoformat(),
+    })
+    _persist_state()
+    logger.info("[INFO] Demo data reset completed — patients: %d, alerts: %d", len(db['patients']), len(db['alerts']))
+    return {
+        "status": "ok",
+        "patients": len(db['patients']),
+        "alerts": len(db['alerts']),
+        "message": "Demo data reset. Patients restored to their original profiles and alerts regenerated."
+    }
+
+
 @app.get("/api/dashboard/summary")
 async def get_dashboard_summary():
     patients = list(db['patients'].values())

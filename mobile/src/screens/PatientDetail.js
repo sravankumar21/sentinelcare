@@ -9,11 +9,12 @@ const RISK_LABELS = { STABLE: 'Stable', WATCH: 'Watch', HIGH: 'High Risk', CRITI
 function RiskSparkline({ data, color }) {
   if (!data || data.length < 2) return null;
   const height = 120;
-  const width = null;
   const max = 100;
   const min = 0;
-  const step = 100 / (data.length - 1);
-  const pts = data.map((v, i) => ({ x: i * step, y: height - ((v - min) / (max - min)) * height }));
+  const clean = data.filter(v => Number.isFinite(v)).map(v => Math.max(min, Math.min(max, v)));
+  if (clean.length < 2) return null;
+  const step = 100 / (clean.length - 1);
+  const pts = clean.map((v, i) => ({ x: i * step, y: height - ((v - min) / (max - min)) * height }));
   return (
     <View style={{ height, justifyContent: 'space-between', marginVertical: 8 }}>
       {[0, 1, 2].map(r => (
@@ -37,13 +38,20 @@ function RiskSparkline({ data, color }) {
 }
 
 export default function PatientDetail({ route, navigation }) {
-  const { patientId, bed } = route.params;
+  const { patientId, bed } = route.params || {};
   const { colors } = useTheme();
   const styles = buildStyles(colors);
   const [patient, setPatient] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [trajectory, setTrajectory] = useState(null);
+
+  const num = (v, d = 0) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (v === null || v === undefined || v === '') return d;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : d;
+  };
 
   useEffect(() => {
     let active = true;
@@ -80,16 +88,19 @@ export default function PatientDetail({ route, navigation }) {
   }
 
   const color = getStatusColor(patient.risk_status);
-  const riskPct = Math.round(patient.risk_probability * 100);
-  const riskHistory = patient.risk_history || [];
+  const riskPct = Math.round(num(patient.risk_probability) * 100);
+  const riskHistory = (patient.risk_history || []).map(v => num(v)).filter(Number.isFinite);
   const hasTrend = riskHistory.length > 1;
+  const trajHistory = (trajectory && trajectory.risk_history) || [];
+  const sparkData = (trajHistory.length > 1 ? trajHistory : riskHistory).map(v => num(v, 0.5) * 100);
 
+  const v = patient.vitals || {};
   const vitals = [
-    { label: 'SpO₂', value: `${patient.vitals.spo2_pct.toFixed(1)}%`, unit: '', color: patient.vitals.spo2_pct < 92 ? '#ef4444' : '#22c55e' },
-    { label: 'Heart Rate', value: Math.round(patient.vitals.heart_rate).toString(), unit: 'bpm', color: patient.vitals.heart_rate > 120 ? '#f97316' : '#22c55e' },
-    { label: 'Resp Rate', value: Math.round(patient.vitals.respiratory_rate).toString(), unit: '/min', color: patient.vitals.respiratory_rate > 28 ? '#f97316' : '#22c55e' },
-    { label: 'Temperature', value: patient.vitals.temperature_c.toFixed(1), unit: '°C', color: colors.textPrimary },
-    { label: 'Blood Pressure', value: `${Math.round(patient.vitals.systolic_bp)}/${Math.round(patient.vitals.diastolic_bp)}`, unit: '', color: colors.textPrimary },
+    { label: 'SpO₂', value: `${num(v.spo2_pct).toFixed(1)}%`, unit: '', color: num(v.spo2_pct) < 92 ? '#ef4444' : '#22c55e' },
+    { label: 'Heart Rate', value: Math.round(num(v.heart_rate)).toString(), unit: 'bpm', color: num(v.heart_rate) > 120 ? '#f97316' : '#22c55e' },
+    { label: 'Resp Rate', value: Math.round(num(v.respiratory_rate)).toString(), unit: '/min', color: num(v.respiratory_rate) > 28 ? '#f97316' : '#22c55e' },
+    { label: 'Temperature', value: num(v.temperature_c).toFixed(1), unit: '°C', color: colors.textPrimary },
+    { label: 'Blood Pressure', value: `${Math.round(num(v.systolic_bp))}/${Math.round(num(v.diastolic_bp))}`, unit: '', color: colors.textPrimary },
     { label: 'Oxygen', value: String(patient.oxygen_device || 'none'), unit: '', color: colors.textPrimary },
   ];
 
@@ -110,7 +121,7 @@ export default function PatientDetail({ route, navigation }) {
           <Text style={styles.riskLabel}>Deterioration Risk</Text>
           <Text style={[styles.riskValue, { color }]}>{riskPct}%</Text>
           <View style={[styles.statusPill, { backgroundColor: `${color}22` }]}>
-            <Text style={[styles.statusText, { color }]}>{RISK_LABELS[patient.risk_status]}</Text>
+            <Text style={[styles.statusText, { color }]}>{RISK_LABELS[patient.risk_status] || patient.risk_status}</Text>
           </View>
           <Text style={[styles.trend, { color }]}>
             {patient.trend_arrow} {patient.risk_trend}
@@ -131,9 +142,9 @@ export default function PatientDetail({ route, navigation }) {
 
         <Text style={styles.sectionTitle}>Risk Trajectory</Text>
         <GlassCard style={styles.chartCard}>
-          {(trajectory?.risk_history?.length > 1 || riskHistory.length > 1) ? (
+          {(trajHistory.length > 1 || riskHistory.length > 1) ? (
             <RiskSparkline
-              data={(trajectory?.risk_history?.length > 1 ? trajectory.risk_history : riskHistory).map(r => r * 100)}
+              data={sparkData}
               color={color}
             />
           ) : (

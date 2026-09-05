@@ -12,6 +12,7 @@ import RiskAnalyzer from './src/screens/RiskAnalyzer';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/services/api';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import Snackbar, { showSnackbar } from './src/components/Snackbar';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -100,6 +101,7 @@ function AppNavigator() {
           <Stack.Screen name="RiskAnalyzer" component={RiskAnalyzer} />
         </Stack.Navigator>
         <Disclaimer />
+        <Snackbar />
       </View>
     </NavigationContainer>
   );
@@ -119,15 +121,30 @@ function Disclaimer() {
 
 let seenAlertIds = new Set();
 
+async function ensureDeteriorationChannel() {
+  if (Platform.OS !== 'android') return;
+  try {
+    await Notifications.setNotificationChannelAsync('deterioration', {
+      name: 'Deterioration alerts',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      sound: 'default',
+    });
+  } catch (e) {}
+}
+
 async function notifyForAlert(alert) {
   if (!alert || alert.status !== 'PENDING' || seenAlertIds.has(`alert-${alert.alert_id}`)) return;
   seenAlertIds.add(`alert-${alert.alert_id}`);
   try {
+    await ensureDeteriorationChannel();
+    showSnackbar(`Alert created for ${alert.bed} — Ward ${alert.ward} · Notification sent`);
     await Notifications.scheduleNotificationAsync({
       content: {
         title: `🚨 Deterioration alert — ${alert.bed} (Ward ${alert.ward})`,
         body: `Risk ${Math.round(alert.risk_probability * 100)}%. Clinical review recommended.`,
-        sound: true,
+        sound: 'default',
+        channelId: 'deterioration',
         data: { alert_id: alert.alert_id, patient_id: alert.patient_id },
       },
       trigger: null,

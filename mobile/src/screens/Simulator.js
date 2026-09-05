@@ -1,21 +1,28 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, RefreshControl } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
+import { showSnackbar } from '../components/Snackbar';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
+
+const MAX_STEPS = 12;
 
 export default function Simulator({ navigation }) {
   const { colors } = useTheme();
   const styles = buildStyles(colors);
   const [patients, setPatients] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [running, setRunning] = useState(false);
-  const [simData, setSimData] = useState(null);
+  const [alertPids, setAlertPids] = useState([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [runningPid, setRunningPid] = useState(null);
+  const [outcome, setOutcome] = useState({});
   const [busy, setBusy] = useState(false);
-  const [alertFired, setAlertFired] = useState(false);
 
   const refresh = useCallback(async () => {
-    try { const p = await api.getPatients(); setPatients(p.patients); } catch (e) {}
+    try {
+      const [p, a] = await Promise.all([api.getPatients(), api.getAlerts()]);
+      setPatients(p.patients);
+      setAlertPids((a.alerts || []).map(x => x.patient_id));
+    } catch (e) {}
   }, []);
 
   useEffect(() => {
@@ -24,151 +31,88 @@ export default function Simulator({ navigation }) {
     return () => clearInterval(interval);
   }, [refresh]);
 
-  const selectedPatient = patients.find(p => p.patient_id === selected);
-  const pct = selectedPatient ? Math.round(selectedPatient.risk_probability * 100) : 0;
-  const color = selectedPatient ? getStatusColor(selectedPatient.risk_status) : colors.textMuted;
+  const runPool = patients.filter(p => !alertPids.includes(p.patient_id));
 
-  const startSim = async (mode) => {
-    if (!selected) return;
+  const runDeterioration = async (pid) => {
+    if (busy) return;
     setBusy(true);
+    setRunningPid(pid);
+    setOutcome(prev => ({ ...prev, [pid]: null }));
     try {
-      await api.simulateStart(selected, mode);
-      setRunning(true);
-      setSimData(null);
-      setAlertFired(false);
-    } catch (e) {}
-    setBusy(false);
-  };
-
-  const stepSim = async () => {
-    if (!selected || !running || busy) return;
-    setBusy(true);
-    try {
-      const data = await api.simulateStep(selected);
-      setSimData(data);
-      if (data.new_alert) setAlertFired(true);
-    } catch (e) {}
-    setBusy(false);
-  };
-
-  const autoRun = async () => {
-    for (let i = 0; i < 10; i++) {
-      if (!running) break;
-      await stepSim();
-      await new Promise(r => setTimeout(r, 120));
+      await api.simulateStart(pid, 'deteriorate');
+      for (let i = 0; i < MAX_STEPS; i++) {
+        const data = await api.simulateStep(pid);
+        if (data.new_alert) {
+          const p = runPool.find(x => x.patient_id === pid);
+          showSnackbar(`Alert created for ${p?.bed || ''} — Ward ${p?.ward || ''} · Notification sent`);
+          setOutcome(prev => ({ ...prev, [pid]: { ok: true, risk: data.risk_probability } }));
+          setRunningPid(null);
+          setBusy(false);
+          refresh();
+          return;
+        }
+        await new Promise(r => setTimeout(r, 120));
+      }
+      setOutcome(prev => ({ ...prev, [pid]: { ok: false } }));
+    } catch (e) {
+      setOutcome(prev => ({ ...prev, [pid]: { ok: false } }));
     }
+    setRunningPid(null);
+    setBusy(false);
   };
-
-  const reset = async () => {
-    if (!selected) return;
-    try { await api.simulateReset(selected); setRunning(false); setSimData(null); setAlertFired(false); } catch (e) {}
-  };
-
-  const vitals = selectedPatient ? [
-    { label: 'SpO₂', value: `${selectedPatient.vitals.spo2_pct.toFixed(1)}%` },
-    { label: 'HR', value: `${Math.round(selectedPatient.vitals.heart_rate)} bpm` },
-    { label: 'RR', value: `${Math.round(selectedPatient.vitals.respiratory_rate)}/min` },
-    { label: 'Temp', value: `${selectedPatient.vitals.temperature_c.toFixed(1)}°C` },
-    { label: 'BP', value: `${Math.round(selectedPatient.vitals.systolic_bp)}/${Math.round(selectedPatient.vitals.diastolic_bp)}` },
-    { label: 'Risk', value: `${pct}%`, color },
-  ] : [];
 
   return (
     <Background>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-        <Text style={styles.title}>Patient Simulator</Text>
-        <Text style={styles.subtitle}>Simulate incoming observations through the real ML pipeline</Text>
+      <ScrollView
+        style={styles.container} contentContainerStyle={styles.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.accentCyan} />}
+      >
+        <Text style={styles.title}>Run Simulator</Text>
+        <Text style={styles.subtitle}>
+          Patients below have no active alert. Run a deterioration simulation to create one.
+        </Text>
 
-        <GlassCard style={styles.selectCard}>
-          <Text style={styles.label}>Select Patient</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
-            {patients.map(p => (
-              <TouchableOpacity key={p.patient_id} onPress={() => { setSelected(p.patient_id); setSimData(null); setRunning(false); setAlertFired(false); }}
-                style={[styles.pill, selected === p.patient_id && styles.pillActive]}>
-                <Text style={[styles.pillText, selected === p.patient_id && styles.pillTextActive]}>
-                  {p.bed} · {Math.round(p.risk_probability * 100)}%
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </GlassCard>
-
-        {selectedPatient && (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
-            {vitals.map(v => (
-              <GlassCard key={v.label} style={styles.vitalCard}>
-                <Text style={styles.vitalLabel}>{v.label}</Text>
-                <Text style={[styles.vitalValue, { color: v.color || colors.textPrimary }]}>{v.value}</Text>
-              </GlassCard>
-            ))}
-          </View>
-        )}
-
-        {selectedPatient && (
-          <GlassCard style={[styles.riskPanel, { borderColor: `${color}44` }]}>
-            <Text style={styles.riskLabel}>Current Risk</Text>
-            <Text style={[styles.riskValue, { color }]}>{pct}%</Text>
-            <Text style={[styles.riskStatus, { color }]}>{selectedPatient.risk_status}</Text>
+        {runPool.length === 0 ? (
+          <GlassCard style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>All patients are covered</Text>
+            <Text style={styles.emptyText}>Every patient already has an alert. Start fresh with the reset in the app, or acknowledge alerts to clear them.</Text>
           </GlassCard>
-        )}
-
-        <View style={styles.controls}>
-          <TouchableOpacity style={[styles.btn, styles.btnStable, !selected && styles.btnDisabled]}
-            onPress={() => startSim('stable')} disabled={!selected || busy}>
-            <Text style={styles.btnStableText}>Simulate Normal</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.btnDanger, !selected && styles.btnDisabled]}
-            onPress={() => startSim('deteriorate')} disabled={!selected || busy}>
-            <Text style={styles.btnDangerText}>Simulate Deterioration</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.btnGhost, (!selected || !running) && styles.btnDisabled]}
-            onPress={stepSim} disabled={!selected || !running || busy}>
-            <Text style={styles.btnGhostText}>Step ›</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.btnGhost, (!selected || !running) && styles.btnDisabled]}
-            onPress={autoRun} disabled={!selected || !running || busy}>
-            <Text style={styles.btnGhostText}>Auto 10 Steps</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.btnReset, !selected && styles.btnDisabled]}
-            onPress={reset} disabled={!selected || busy}>
-            <Text style={styles.btnGhostText}>Reset</Text>
-          </TouchableOpacity>
-        </View>
-
-        {busy && <ActivityIndicator color={colors.accentCyan} style={{ marginTop: 20 }} />}
-
-        {alertFired && (
-          <GlassCard style={styles.alertBanner}>
-            <Text style={styles.alertTitle}>🚨 HIGH DETERIORATION RISK</Text>
-            <Text style={styles.alertBody}>
-              Bed {selectedPatient?.bed} — Ward {selectedPatient?.ward}
-              {'\n'}Risk: {pct}%
-              {'\n'}Clinical review recommended.
-            </Text>
-            <TouchableOpacity style={styles.viewBtn} onPress={() => navigation.navigate('PatientDetail', { patientId: selected, bed: selectedPatient?.bed })}>
-              <Text style={styles.viewBtnText}>Open Patient ›</Text>
-            </TouchableOpacity>
-          </GlassCard>
-        )}
-
-        {simData && !alertFired && (
-          <GlassCard style={styles.latestCard}>
-            <Text style={styles.latestTitle}>Latest Observation Processed</Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-              {[
-                { l: 'SpO₂', v: `${simData.vitals.spo2_pct.toFixed(1)}%` },
-                { l: 'HR', v: `${Math.round(simData.vitals.heart_rate)}` },
-                { l: 'RR', v: `${Math.round(simData.vitals.respiratory_rate)}` },
-                { l: 'BP', v: `${Math.round(simData.vitals.systolic_bp)}/${Math.round(simData.vitals.diastolic_bp)}` },
-                { l: 'Risk', v: `${Math.round(simData.risk_probability * 100)}%`, c: getStatusColor(simData.risk_status) },
-              ].map(x => (
-                <View key={x.l} style={styles.stepItem}>
-                  <Text style={styles.stepLabel}>{x.l}</Text>
-                  <Text style={[styles.stepValue, { color: x.c || colors.textPrimary }]}>{x.v}</Text>
+        ) : (
+          runPool.map(p => {
+            const color = getStatusColor(p.risk_status);
+            const pct = Math.round(p.risk_probability * 100);
+            const res = outcome[p.patient_id];
+            return (
+              <GlassCard key={p.patient_id} style={styles.patientCard}>
+                <View style={styles.row}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.bed}>{p.bed} · Ward {p.ward}</Text>
+                    <Text style={[styles.risk, { color }]}>Risk {pct}% · {p.risk_status}</Text>
+                  </View>
+                  {runningPid === p.patient_id ? (
+                    <ActivityIndicator color={colors.accentCyan} />
+                  ) : (
+                    <TouchableOpacity style={[styles.runBtn, busy && styles.btnDisabled]}
+                      onPress={() => runDeterioration(p.patient_id)} disabled={busy}>
+                      <Text style={styles.runBtnText}>Create Alert</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
-              ))}
-            </View>
-          </GlassCard>
+                {res && res.ok && (
+                  <View style={styles.okBanner}>
+                    <Text style={styles.okText}>
+                      🚨 Alert created — Risk {Math.round(res.risk * 100)}%. Tap the patient card to review.
+                    </Text>
+                  </View>
+                )}
+                {res && !res.ok && (
+                  <View style={styles.failBanner}>
+                    <Text style={styles.failText}>Simulation completed without crossing the alert threshold.</Text>
+                  </View>
+                )}
+              </GlassCard>
+            );
+          })
         )}
       </ScrollView>
     </Background>
@@ -180,37 +124,21 @@ const buildStyles = (colors) => StyleSheet.create({
   content: { padding: 16, paddingBottom: 40 },
   title: { fontSize: 24, fontWeight: '800', color: colors.textPrimary },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4, marginBottom: 16 },
-  selectCard: { padding: 16 },
-  label: { fontSize: 12, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 },
-  pill: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: colors.cardBg, borderWidth: 1, borderColor: colors.glassBorder, marginRight: 8 },
-  pillActive: { backgroundColor: colors.chipBg, borderColor: colors.chipBorder },
-  pillText: { fontSize: 13, color: colors.textSecondary },
-  pillTextActive: { color: colors.accentBlue, fontWeight: '600' },
-  vitalCard: { width: '31%', alignItems: 'center', paddingVertical: 12 },
-  vitalLabel: { fontSize: 10, color: colors.textMuted, textTransform: 'uppercase' },
-  vitalValue: { fontSize: 17, fontWeight: '700', marginTop: 3 },
-  riskPanel: { alignItems: 'center', padding: 20, marginTop: 16, borderWidth: 1 },
-  riskLabel: { fontSize: 12, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 1 },
-  riskValue: { fontSize: 48, fontWeight: '800', marginVertical: 4 },
-  riskStatus: { fontSize: 14, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
-  controls: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 18 },
-  btn: { paddingVertical: 13, paddingHorizontal: 18, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  btnStable: { backgroundColor: 'rgba(34,197,94,0.12)', borderWidth: 1, borderColor: 'rgba(34,197,94,0.3)' },
-  btnStableText: { color: '#22c55e', fontWeight: '600', fontSize: 13 },
-  btnDanger: { backgroundColor: 'rgba(239,68,68,0.12)', borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)' },
-  btnDangerText: { color: '#ef4444', fontWeight: '700', fontSize: 13 },
-  btnGhost: { backgroundColor: colors.cardBg, borderWidth: 1, borderColor: colors.glassBorder },
-  btnGhostText: { color: colors.textPrimary, fontWeight: '600', fontSize: 13 },
-  btnReset: { backgroundColor: colors.cardBg, borderWidth: 1, borderColor: colors.glassBorder },
-  btnDisabled: { opacity: 0.35 },
-  alertBanner: { padding: 20, marginTop: 20, backgroundColor: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.4)' },
-  alertTitle: { color: '#ef4444', fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.5 },
-  alertBody: { color: colors.textPrimary, fontSize: 14, textAlign: 'center', marginTop: 10, lineHeight: 22 },
-  viewBtn: { marginTop: 14, paddingVertical: 10, borderRadius: 10, backgroundColor: 'rgba(239,68,68,0.2)', alignItems: 'center' },
-  viewBtnText: { color: '#ef4444', fontWeight: '700', fontSize: 14 },
-  latestCard: { padding: 16, marginTop: 16 },
-  latestTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
-  stepItem: { width: '30%', alignItems: 'center', paddingVertical: 8, backgroundColor: colors.cardBg, borderRadius: 8 },
-  stepLabel: { fontSize: 10, color: colors.textMuted },
-  stepValue: { fontSize: 16, fontWeight: '700', marginTop: 2 },
+  emptyCard: { padding: 28, alignItems: 'center', borderColor: 'rgba(34,197,94,0.3)' },
+  emptyTitle: { fontSize: 17, fontWeight: '700', color: colors.textPrimary },
+  emptyText: { fontSize: 13, color: colors.textSecondary, marginTop: 8, textAlign: 'center', lineHeight: 20 },
+  patientCard: { padding: 16, marginBottom: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  bed: { fontSize: 17, fontWeight: '700', color: colors.textPrimary },
+  risk: { fontSize: 13, marginTop: 3, fontWeight: '600' },
+  runBtn: {
+    paddingVertical: 12, paddingHorizontal: 18, borderRadius: 10,
+    backgroundColor: '#f97316', alignItems: 'center',
+  },
+  runBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  btnDisabled: { opacity: 0.5 },
+  okBanner: { marginTop: 12, padding: 12, borderRadius: 8, backgroundColor: 'rgba(239,68,68,0.12)' },
+  okText: { color: '#ef4444', fontSize: 13, fontWeight: '600' },
+  failBanner: { marginTop: 12, padding: 12, borderRadius: 8, backgroundColor: 'rgba(234,179,8,0.12)' },
+  failText: { color: '#b45309', fontSize: 13, fontWeight: '600' },
 });
