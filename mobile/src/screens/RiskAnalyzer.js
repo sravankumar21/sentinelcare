@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput,
-  ActivityIndicator, KeyboardAvoidingView, Platform,
+  ActivityIndicator, KeyboardAvoidingView, Platform, Switch,
 } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
+import MonitorPanel from '../components/MonitorPanel';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
 
@@ -13,6 +14,17 @@ const DEFAULTS = {
   lactate: 1.0, wbc_count: 8.0, creatinine: 0.9, crp_level: 5.0, hemoglobin: 13.0,
   age: 60, gender: 'M', admission_type: 'ED', comorbidity_index: 0,
   sepsis_risk_score: 0.1, nurse_alert: 0, mobility_score: 3.0, baseline_risk_score: 0.05, los_hours: 24,
+};
+
+// Data-driven deterioration signature (sepsis + organ derangement). Verified to
+// score 91% CRITICAL through the static risk model. Covers vitals, labs and
+// context so the analyzer escalates decisively with one tap.
+const RISKY_VALUES = {
+  spo2_pct: 90, heart_rate: 104, respiratory_rate: 24, temperature_c: 38.6,
+  systolic_bp: 102, diastolic_bp: 64, oxygen_flow: 8, oxygen_device: 'hfnc',
+  lactate: 3.2, wbc_count: 12, creatinine: 1.6, crp_level: 55, hemoglobin: 11.8,
+  age: 68, gender: 'M', admission_type: 'ED', comorbidity_index: 3,
+  sepsis_risk_score: 0.75, nurse_alert: 1, mobility_score: 1, baseline_risk_score: 0.5, los_hours: 48,
 };
 
 const VITAL_FIELDS = [
@@ -57,6 +69,23 @@ export default function RiskAnalyzer({ navigation }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [errors, setErrors] = useState({});
+  const [riskyMode, setRiskyMode] = useState(false);
+
+  const useRiskyValues = () => {
+    setRiskyMode(true);
+    setValues({ ...DEFAULTS, ...RISKY_VALUES });
+    setErrors({});
+    setResult(null);
+    setSimResult(null);
+  };
+
+  const useDefaultValues = () => {
+    setRiskyMode(false);
+    setValues({ ...DEFAULTS });
+    setErrors({});
+    setResult(null);
+    setSimResult(null);
+  };
 
   const update = (key, val) => {
     setValues(prev => ({ ...prev, [key]: val }));
@@ -141,6 +170,21 @@ export default function RiskAnalyzer({ navigation }) {
           </Text>
 
           <GlassCard style={styles.section}>
+            <View style={styles.riskyRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.riskyTitle}>Use Risky Values</Text>
+                <Text style={styles.riskyHint}>Auto-fill a deteriorating patient profile (sepsis + organ derangement)</Text>
+              </View>
+              <Switch
+                value={riskyMode}
+                onValueChange={on => (on ? useRiskyValues() : useDefaultValues())}
+                trackColor={{ false: colors.glassBorder, true: '#f97316' }}
+                thumbColor={riskyMode ? '#fff' : colors.textMuted}
+              />
+            </View>
+          </GlassCard>
+
+          <GlassCard style={styles.section}>
             <Text style={styles.sectionTitle}>Vital Signs</Text>
             {VITAL_FIELDS.map(renderField)}
           </GlassCard>
@@ -170,18 +214,8 @@ export default function RiskAnalyzer({ navigation }) {
 
           {result && (
             <GlassCard style={[styles.resultCard, { borderColor: `${color}44` }]}>
-              <Text style={styles.resultLabel}>Deterioration Risk</Text>
-              <Text style={[styles.resultValue, { color }]}>{result.risk_percentage}%</Text>
-              <View style={[styles.statusPill, { backgroundColor: `${color}22` }]}>
-                <Text style={[styles.statusText, { color }]}>{result.risk_status}</Text>
-              </View>
+              <MonitorPanel result={result} />
 
-              <View style={styles.metaRow}>
-                <Text style={styles.metaLabel}>Model</Text>
-                <Text style={styles.metaValue}>{result.model_version}</Text>
-              </View>
-
-              <Text style={styles.sectionTitle}>Current Observations</Text>
               <View style={styles.obsGrid}>
                 {Object.entries(result.vitals || {}).map(([k, v]) => (
                   <View key={k} style={styles.obsItem}>
@@ -279,6 +313,9 @@ const buildStyles = (colors) => StyleSheet.create({
   title: { fontSize: 22, fontWeight: '800', color: colors.textPrimary },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: 16 },
   section: { padding: 16, marginBottom: 12 },
+  riskyRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  riskyTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  riskyHint: { fontSize: 11, color: colors.textMuted, marginTop: 2 },
   sectionTitle: { fontSize: 13, fontWeight: '700', color: colors.accentCyan, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10, marginTop: 8 },
   field: { marginBottom: 10 },
   fieldLabel: { fontSize: 12, color: colors.textSecondary, marginBottom: 4 },
@@ -304,14 +341,7 @@ const buildStyles = (colors) => StyleSheet.create({
   analyzeBtnText: { color: '#fff', fontWeight: '700', fontSize: 15, letterSpacing: 0.5 },
   btnDisabled: { opacity: 0.5 },
   resultCard: { padding: 20, borderWidth: 1, alignItems: 'center', marginBottom: 12 },
-  resultLabel: { fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 1.5 },
-  resultValue: { fontSize: 56, fontWeight: '800', marginVertical: 6 },
-  statusPill: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 8, marginBottom: 12 },
-  statusText: { fontSize: 14, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 1 },
-  metaRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingHorizontal: 16, marginBottom: 8 },
-  metaLabel: { fontSize: 12, color: colors.textMuted },
-  metaValue: { fontSize: 12, color: colors.textSecondary, fontWeight: '600' },
-  obsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  obsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8, width: '100%' },
   obsItem: { width: '30%', alignItems: 'center', paddingVertical: 8, backgroundColor: colors.cardBg, borderRadius: 8 },
   obsLabel: { fontSize: 9, color: colors.textMuted, textTransform: 'uppercase' },
   obsValue: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginTop: 2 },

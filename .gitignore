@@ -38,3 +38,6 @@ frontend/build/
 
 # --- Firebase service account private key (secret) - never commit ---
 *firebase-adminsdk*.json
+
+# --- Runtime state (demo session persistence) ---
+backend/state.json

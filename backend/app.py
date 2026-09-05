@@ -51,6 +51,8 @@ PER_DOCTOR_CRITICAL_LIMIT = 2  # max CRITICAL patients one doctor handles before
 
 model = None
 feature_cols = None
+model_static = None
+static_feature_cols = None
 
 RISK_THRESHOLDS = [
     {'max': 0.24, 'label': 'STABLE'},
@@ -62,7 +64,7 @@ ALERT_THRESHOLD = 0.50
 
 
 def load_model():
-    global model, feature_cols
+    global model, feature_cols, model_static, static_feature_cols
     model_path = os.path.join(MODELS_DIR, 'best_model.pkl')
     features_path = os.path.join(MODELS_DIR, 'feature_columns.json')
     try:
@@ -76,6 +78,16 @@ def load_model():
             with open(features_path) as f:
                 feature_cols = json.load(f)
             logger.info("[INFO] Feature columns loaded: %d features", len(feature_cols))
+        static_path = os.path.join(MODELS_DIR, 'best_model_static.pkl')
+        static_feats_path = os.path.join(MODELS_DIR, 'static_feature_columns.json')
+        if os.path.exists(static_path):
+            with open(static_path, 'rb') as f:
+                model_static = pickle.load(f)
+            with open(static_feats_path) as f:
+                static_feature_cols = json.load(f)
+            logger.info("[INFO] Static ML model loaded: %d features", len(static_feature_cols))
+        else:
+            logger.info("[INFO] Static model not found (ok if not retrained yet)")
     except Exception as e:
         logger.error("[ERROR] Failed to load model: %s\n%s", e, traceback.format_exc())
 
@@ -154,6 +166,68 @@ def predict_risk(obs_df):
         return round(prob, 4), get_risk_status(prob)
     except Exception as e:
         logger.error("[ERROR] predict_risk failed: %s\n%s", e, traceback.format_exc())
+        return 0.05, get_risk_status(0.05)
+
+
+OXYGEN_ENC = {'none': 0, 'nasal': 1, 'hfnc': 2, 'mask': 3, 'niv': 4}
+GENDER_ENC = {'M': 0, 'F': 1}
+ADMISSION_ENC = {'Elective': 0, 'ED': 1, 'Transfer': 2}
+
+
+def _build_static_features(vitals: dict) -> dict:
+    """Build the static (point-in-time) feature vector for the static risk model."""
+    oxygen_map = OXYGEN_ENC
+    gender_map = GENDER_ENC
+    admission_map = ADMISSION_ENC
+    d = dict(vitals)
+    d.setdefault('spo2_pct', 97.0)
+    d.setdefault('heart_rate', 82.0)
+    d.setdefault('respiratory_rate', 18.0)
+    d.setdefault('temperature_c', 37.0)
+    d.setdefault('systolic_bp', 122.0)
+    d.setdefault('diastolic_bp', 78.0)
+    d.setdefault('oxygen_flow', 0.0)
+    d.setdefault('mobility_score', 3.0)
+    d.setdefault('nurse_alert', 0)
+    d.setdefault('wbc_count', 8.0)
+    d.setdefault('lactate', 1.0)
+    d.setdefault('creatinine', 0.9)
+    d.setdefault('crp_level', 5.0)
+    d.setdefault('hemoglobin', 13.0)
+    d.setdefault('sepsis_risk_score', 0.1)
+    d.setdefault('age', 60)
+    d.setdefault('comorbidity_index', 0)
+    d.setdefault('baseline_risk_score', 0.05)
+    d.setdefault('los_hours', 24.0)
+    d.setdefault('oxygen_device', 'none')
+    d.setdefault('gender', 'M')
+    d.setdefault('admission_type', 'ED')
+    d['oxygen_device_enc'] = oxygen_map.get(str(d.get('oxygen_device', 'none')), 0)
+    d['gender_enc'] = gender_map.get(str(d.get('gender', 'M')), 0)
+    d['admission_type_enc'] = admission_map.get(str(d.get('admission_type', 'ED')), 0)
+    return d
+
+
+def predict_risk_static(vitals: dict):
+    """Predict deterioration risk from point-in-time vitals using the static model.
+    Reliable for the Test Risk Analyzer: abnormal vitals -> HIGH/CRITICAL."""
+    global model_static, static_feature_cols
+    if model_static is None or static_feature_cols is None:
+        logger.warning("[WARN] Static model not loaded, falling back to temporal predict")
+        try:
+            history = _build_synthetic_history(vitals)
+            return predict_risk(pd.DataFrame(history))
+        except Exception as e:
+            logger.error("[ERROR] Static model fallback failed: %s", e)
+            return 0.05, get_risk_status(0.05)
+    try:
+        d = _build_static_features(vitals)
+        X = np.array([[float(d[c]) for c in static_feature_cols]])
+        prob = float(model_static.predict_proba(X)[0, 1])
+        logger.info("[INFO] Static model prediction: %.4f → %s", prob, get_risk_status(prob))
+        return round(prob, 4), get_risk_status(prob)
+    except Exception as e:
+        logger.error("[ERROR] predict_risk_static failed: %s\n%s", e, traceback.format_exc())
         return 0.05, get_risk_status(0.05)
 
 
@@ -370,33 +444,39 @@ def init_demo_patients():
 
 
 def _generate_initial_alerts():
-    """Generate alerts for patients that start above the alert threshold."""
-    for pid, p in db['patients'].items():
-        if p['risk_probability'] >= ALERT_THRESHOLD:
-            db['alert_counter'] += 1
-            recs = recommend_actions(p['vitals'])
-            alert = {
-                'alert_id': db['alert_counter'],
-                'patient_id': int(pid),
-                'bed': p['bed'],
-                'ward': p['ward'],
-                'hospital_id': p.get('hospital_id'),
-                'hospital_name': p.get('hospital_name'),
-                'risk_probability': p['risk_probability'],
-                'previous_risk': round(p['risk_probability'] * 0.9, 4),
-                'risk_change': round(p['risk_probability'] * 0.1, 4),
-                'vitals_snapshot': p['vitals'].copy(),
-                'recommendations': recs,
-                'assigned_doctor_id': assign_doctor_to_alert({'patient_id': int(pid), 'risk_probability': p['risk_probability']}),
-                'escalated': False,
-                'status': 'PENDING',
-                'created_at': datetime.now().isoformat(),
-                'message': f"Elevated deterioration risk detected ({round(p['risk_probability']*100,1)}%). Clinical review recommended."
-            }
-            db['alerts'].append(alert)
-            state = db['simulator_state'].get(pid, {})
-            state['last_alerted_risk'] = p['risk_probability']
-            logger.info("[INFO] Initial alert generated: ALERT-%d for patient %d (%.1f%%)", db['alert_counter'], pid, p['risk_probability']*100)
+    """Generate at most 2 initial alerts for the highest-risk patients above the alert threshold.
+    This prevents flooding the alerts page on first load."""
+    high_risk_patients = [
+        (pid, p) for pid, p in db['patients'].items()
+        if p['risk_probability'] >= ALERT_THRESHOLD
+    ]
+    high_risk_patients.sort(key=lambda x: x[1]['risk_probability'], reverse=True)
+    initial_alerts = high_risk_patients[:2]
+    for pid, p in initial_alerts:
+        db['alert_counter'] += 1
+        recs = recommend_actions(p['vitals'])
+        alert = {
+            'alert_id': db['alert_counter'],
+            'patient_id': int(pid),
+            'bed': p['bed'],
+            'ward': p['ward'],
+            'hospital_id': p.get('hospital_id'),
+            'hospital_name': p.get('hospital_name'),
+            'risk_probability': p['risk_probability'],
+            'previous_risk': round(p['risk_probability'] * 0.9, 4),
+            'risk_change': round(p['risk_probability'] * 0.1, 4),
+            'vitals_snapshot': p['vitals'].copy(),
+            'recommendations': recs,
+            'assigned_doctor_id': assign_doctor_to_alert({'patient_id': int(pid), 'risk_probability': p['risk_probability']}),
+            'escalated': False,
+            'status': 'PENDING',
+            'created_at': datetime.now().isoformat(),
+            'message': f"Elevated deterioration risk detected ({round(p['risk_probability']*100,1)}%). Clinical review recommended."
+        }
+        db['alerts'].append(alert)
+        state = db['simulator_state'].get(pid, {})
+        state['last_alerted_risk'] = p['risk_probability']
+        logger.info("[INFO] Initial alert generated: ALERT-%d for patient %d (%.1f%%)", db['alert_counter'], pid, p['risk_probability']*100)
     db['system_stats']['alerts_generated'] = len(db['alerts'])
 
 
@@ -406,14 +486,15 @@ async def startup():
     init_demo_patients()
     seed_hospitals_doctors()
     _generate_initial_alerts()
-    # Restore any persisted state that survived (devices, alerts, sim history).
+    # Restore any persisted state that survived (devices, sim history).
+    # NOTE: we deliberately do NOT restore serialized alerts — the demo pool
+    # generates fresh initial alerts on every startup so the alert list only
+    # reflects the current session.
     saved = _load_state()
     if saved:
         if saved.get('devices'):
             db['devices'].update(saved['devices'])
-        if saved.get('alerts'):
-            db['alerts'] = saved['alerts']
-        db['alert_counter'] = int(saved.get('alert_counter', 0))
+        db['alert_counter'] = int(saved.get('alert_counter', len(db['alerts'])))
         if saved.get('simulator_state'):
             for pid, st in saved['simulator_state'].items():
                 if pid in db['simulator_state']:
@@ -478,64 +559,113 @@ def _get_service_account():
     return None
 
 
+EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+
+
+def _is_expo_token(token):
+    return token.startswith(("ExponentPushToken[", "ExpoPushToken["))
+
+
+def _send_via_expo(alert: dict, token: str):
+    """Deliver a push through Expo's free push relay. Works with tokens from
+    `getExpoPushTokenAsync()` / `getDevicePushTokenAsync()` in Expo Go and EAS
+    builds. No Firebase configuration required."""
+    payload = {
+        "to": token,
+        "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
+        "body": (
+            f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
+            "Clinical review recommended. "
+            f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
+            f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
+        ),
+        "data": {
+            "alert_id": str(alert.get('alert_id')),
+            "patient_id": str(alert.get('patient_id')),
+        },
+        "sound": "default",
+        "priority": "high",
+        "channelId": "deterioration",
+    }
+    req = urllib.request.Request(
+        EXPO_PUSH_URL,
+        data=json.dumps([payload]).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        body = resp.read().decode()
+        return {"delivered": True, "service": "expo", "status": resp.status, "response": body[:200]}
+
+
+def _send_via_fcm(alert: dict, token: str):
+    """Deliver a push through Firebase Cloud Messaging (native FCM tokens only)."""
+    sa = _get_service_account()
+    if not sa:
+        return {"delivered": False, "reason": "FCM_SERVICE_ACCOUNT not set"}
+
+    from google.oauth2 import service_account
+    creds = service_account.Credentials.from_service_account_info(
+        sa, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+    )
+    import google.auth.transport.requests
+    creds.refresh(google.auth.transport.requests.Request())
+    access_token = creds.token
+
+    project = sa.get('project_id', 'sentinelcare')
+    message = {
+        "message": {
+            "token": token,
+            "notification": {
+                "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
+                "body": (
+                    f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
+                    "Clinical review recommended. "
+                    f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
+                    f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
+                ),
+            },
+            "data": {
+                "alert_id": str(alert.get('alert_id')),
+                "patient_id": str(alert.get('patient_id')),
+            },
+            "android": {"priority": "HIGH", "notification": {"channel_id": "deterioration", "sound": "default"}},
+        }
+    }
+    req = urllib.request.Request(
+        f"https://fcm.googleapis.com/v1/projects/{project}/messages:send",
+        data=json.dumps(message).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return {"delivered": True, "service": "fcm", "status": resp.status, "name": resp.read().decode()[:120]}
+
+
 def send_push_notification(alert: dict):
-    """Deliver a real push via Firebase Cloud Messaging (v1 HTTP API).
+    """Deliver a push notification to the first registered device.
+
+    Auto-detects the token type and routes it to the correct free service:
+      - Expo push tokens  (ExponentPushToken[...])  -> Expo Push relay (free, works in Expo Go)
+      - Native FCM tokens (Android EAS build)        -> Firebase Cloud Messaging
 
     Config (env vars on the host):
-      PUSH_MODE                 - "fcm" to actually send, "log" (default) to only log.
-      FCM_SERVICE_ACCOUNT_JSON  - contents of the firebase service account JSON.
-      FCM_SERVICE_ACCOUNT_PATH  - OR a path to that JSON file.
+      PUSH_MODE = "auto" (default) | "expo" | "fcm" | "log"
+      FCM_SERVICE_ACCOUNT_JSON / FCM_SERVICE_ACCOUNT_PATH  (only needed for native FCM builds)
     """
     token = next(iter(db['devices'].keys()), None)
     db['system_stats']['push_sent'] += 1
-    mode = os.getenv('PUSH_MODE', 'log')
-    if mode != 'fcm' or not token:
-        return {"delivered": False, "mode": mode, "reason": "no token or PUSH_MODE!=fcm"}
-
-    sa = _get_service_account()
-    if not sa:
-        return {"delivered": False, "mode": mode, "reason": "FCM_SERVICE_ACCOUNT not set"}
+    mode = os.getenv('PUSH_MODE', 'auto')
+    if mode == 'log' or not token:
+        return {"delivered": False, "mode": mode, "reason": "no device token registered or PUSH_MODE=log"}
 
     try:
-        from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_info(
-            sa, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
-        )
-        # Force a fresh token; the google-auth default RSA flow handles expiry.
-        creds.refresh if hasattr(creds, 'refresh') else None
-        import google.auth.transport.requests
-        creds.refresh(google.auth.transport.requests.Request())
-        access_token = creds.token
-
-        project = sa.get('project_id', 'sentinelcare')
-        message = {
-            "message": {
-                "token": token,
-                "notification": {
-                    "title": f"🚨 Deterioration alert — {alert.get('bed', '')} (Ward {alert.get('ward', '')})",
-                    "body": (
-                        f"Risk {round(alert['risk_probability'] * 100, 1)}%. "
-                        "Clinical review recommended. "
-                        f"SpO2 {alert['vitals_snapshot'].get('spo2_pct', 0):.0f}% "
-                        f"HR {alert['vitals_snapshot'].get('heart_rate', 0):.0f} bpm."
-                    ),
-                },
-                "data": {
-                    "alert_id": str(alert.get('alert_id')),
-                    "patient_id": str(alert.get('patient_id')),
-                },
-                "android": {"priority": "HIGH", "notification": {"channel_id": "deterioration", "sound": "default"}},
-            }
-        }
-        req = urllib.request.Request(
-            f"https://fcm.googleapis.com/v1/projects/{project}/messages:send",
-            data=json.dumps(message).encode(),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {access_token}"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return {"delivered": True, "status": resp.status, "name": resp.read().decode()[:120]}
+        if _is_expo_token(token) and mode in ('auto', 'expo'):
+            return _send_via_expo(alert, token)
+        if mode in ('auto', 'fcm'):
+            return _send_via_fcm(alert, token)
+        return {"delivered": False, "mode": mode, "reason": "no matching push service for token"}
     except Exception as e:
-        return {"delivered": False, "error": str(e)}
+        return {"delivered": False, "mode": mode, "error": str(e)}
 
 
 @app.get("/api/patients")
@@ -651,8 +781,9 @@ async def get_alerts():
 async def acknowledge_alert(alert_id: int):
     for alert in db['alerts']:
         if alert['alert_id'] == alert_id:
-            alert['status'] = 'ACKNOWLEDGED'
+            alert['status'] = 'COMPLETED'
             alert['acknowledged_at'] = datetime.now().isoformat()
+            _persist_state()
             return {"status": "ok"}
     raise HTTPException(status_code=404, detail="Alert not found")
 
@@ -843,35 +974,57 @@ async def simulate_step(req: SimulateStepRequest):
     # (lactate, WBC, sepsis score, oxygen support, nurse alert). This keeps the
     # simulation on the real inference path while staying in-distribution for
     # the trained model.
-    new_obs = dict(last)
-    new_obs['hour_from_admission'] = state['next_hour']
     if state['deteriorating']:
         # Deterministic, coordinated deterioration so the live demo reliably
-        # crosses the alert threshold. Values follow the deterioration template
-        # learned from real deteriorated patients (vitals + labs + oxygen).
-        new_obs['spo2_pct'] = max(60, float(new_obs['spo2_pct']) - 2.2)
-        new_obs['heart_rate'] = min(170, float(new_obs['heart_rate']) + 7)
-        new_obs['respiratory_rate'] = min(44, float(new_obs['respiratory_rate']) + 2.4)
-        new_obs['systolic_bp'] = max(55, float(new_obs['systolic_bp']) - 3.5)
-        new_obs['diastolic_bp'] = max(28, float(new_obs['diastolic_bp']) - 2)
-        new_obs['temperature_c'] = min(40.5, float(new_obs['temperature_c']) + 0.5)
-        new_obs['lactate'] = min(6.0, float(new_obs['lactate']) + 0.35)
-        new_obs['wbc_count'] = min(16.0, float(new_obs['wbc_count']) + 0.5)
-        new_obs['sepsis_risk_score'] = min(0.9, float(new_obs['sepsis_risk_score']) + 0.06)
-        new_obs['nurse_alert'] = 1
-        new_obs['oxygen_flow'] = min(45, float(new_obs['oxygen_flow']) + 4.5)
+        # crosses the alert threshold within ~4-6 steps. Values track the
+        # in-distribution deterioration signature learned from real deteriorated
+        # patients (mobility collapse + sepsis/labs elevation + moderate vital
+        # derangement), where the static risk model scores HIGH/CRITICAL.
+        targets = {
+            'spo2_pct': 90.0, 'heart_rate': 102.0, 'respiratory_rate': 23.0,
+            'temperature_c': 38.4, 'systolic_bp': 104.0, 'diastolic_bp': 66.0,
+            'oxygen_flow': 6.0, 'lactate': 2.9, 'wbc_count': 11.0,
+            'crp_level': 48.0, 'creatinine': 1.6, 'hemoglobin': 12.0,
+            'sepsis_risk_score': 0.72, 'mobility_score': 1.0,
+            'baseline_risk_score': 0.50, 'nurse_alert': 1.0,
+        }
+        rate = 0.30
+        # Seed a normalized, displayed-vitals baseline once at episode start so
+        # labs/vitals escalate monotonically from a visible healthy state (the
+        # stored historical window may already contain a septic/critical profile).
+        if state.get('deterioration_steps', 0) == 0:
+            base_obs = dict(last)
+            for k in ('heart_rate', 'respiratory_rate', 'spo2_pct', 'temperature_c', 'systolic_bp', 'diastolic_bp'):
+                base_obs[k] = float(p['vitals'].get(k, base_obs.get(k, 0)))
+            _stable_floor = {
+                'lactate': 1.2, 'wbc_count': 7.0, 'crp_level': 10.0, 'creatinine': 0.8,
+                'hemoglobin': 13.0, 'sepsis_risk_score': 0.12, 'baseline_risk_score': 0.06,
+                'mobility_score': 2.5, 'nurse_alert': 0.0, 'oxygen_flow': 1.0,
+            }
+            for k, floor in _stable_floor.items():
+                base_obs[k] = min(float(base_obs.get(k, floor)), floor)
+            state['deterioration_base'] = base_obs
+        step = state.get('deterioration_steps', 0)
+        state['deterioration_steps'] = step + 1
+        base_obs = state['deterioration_base']
+        frac = 1 - (1 - rate) ** (step + 1)
+        new_obs = dict(base_obs)
+        for _key in targets:
+            cur = float(base_obs.get(_key, 0.0))
+            new_obs[_key] = round(cur + (targets[_key] - cur) * frac, 2)
         dev = str(new_obs['oxygen_device'])
         flow = float(new_obs['oxygen_flow'])
-        if flow > 35:
-            new_obs['oxygen_device'] = 'niv'
-        elif flow > 20:
+        if flow >= 12:
             new_obs['oxygen_device'] = 'hfnc'
-        elif flow > 8:
-            new_obs['oxygen_device'] = 'mask'
-        elif dev == 'none':
+        elif flow >= 4 or dev == 'none':
             new_obs['oxygen_device'] = 'nasal'
-        new_obs['los_hours'] = float(new_obs['los_hours']) + 1
+        new_obs['hour_from_admission'] = int(base_obs.get('hour_from_admission', 0)) + step + 1
+        new_obs['los_hours'] = float(base_obs.get('los_hours', 24.0)) + step + 1
     else:
+        new_obs = dict(last)
+        state['deterioration_base'] = None
+        state['deterioration_steps'] = 0
+        new_obs['hour_from_admission'] = state['next_hour']
         new_obs['spo2_pct'] = min(100, max(90, float(new_obs['spo2_pct']) + random.uniform(-0.5, 0.5)))
         new_obs['heart_rate'] = max(50, min(100, float(new_obs['heart_rate']) + random.uniform(-3, 3)))
         new_obs['respiratory_rate'] = max(10, min(24, float(new_obs['respiratory_rate']) + random.uniform(-1, 1)))
@@ -884,9 +1037,14 @@ async def simulate_step(req: SimulateStepRequest):
     state['obs_df'].append(new_obs)
     state['next_hour'] += 1
 
-    # TRUE inference path on updated history
+    # TRUE inference path on updated history, blended with the point-in-time
+    # static model so a deteriorating patient decisively crosses the alert
+    # threshold while stable periods keep the temporal model's behaviour.
     obs_df = pd.DataFrame(state['obs_df'])
-    risk, status = predict_risk(obs_df)
+    temporal_risk, _ = predict_risk(obs_df)
+    static_risk, _ = predict_risk_static(new_obs)
+    risk = round(max(temporal_risk, static_risk), 4)
+    status = get_risk_status(risk)
     state['risk_history'].append(risk)
 
     # update vitals view
@@ -907,9 +1065,11 @@ async def simulate_step(req: SimulateStepRequest):
     new_alert = False
     push_result = None
     last_alerted_risk = state.get('last_alerted_risk', 0.0)
-    if risk >= ALERT_THRESHOLD:
-        if prev_risk < ALERT_THRESHOLD or last_alerted_risk == 0.0 or (risk - last_alerted_risk) >= 0.10:
-            new_alert = True
+    # Alert once per deterioration episode: when risk crosses the threshold from
+    # below (or the first time the patient is flagged). A patient who recovers
+    # below the threshold and then deteriorates again alerts anew.
+    if risk >= ALERT_THRESHOLD and (prev_risk < ALERT_THRESHOLD or last_alerted_risk == 0.0):
+        new_alert = True
     if new_alert:
         db['alert_counter'] += 1
         recs = recommend_actions(p['vitals'])
@@ -979,6 +1139,8 @@ async def simulate_reset(patient_id: int):
     state['obs_df'] = window
     state['next_hour'] = int(latest.get('hour_from_admission', 0)) + 1
     state['deteriorating'] = False
+    state['deterioration_base'] = None
+    state['deterioration_steps'] = 0
     risk, status = predict_risk(pd.DataFrame(window)) if window else (0.05, 'STABLE')
     state['risk_history'] = _compute_risk_history(window)
     p['risk_probability'] = risk
@@ -1133,9 +1295,7 @@ async def risk_analyze(req: RiskAnalyzeRequest):
     """Analyze risk from manually entered patient observations using the real ML model."""
     logger.info("[INFO] Risk analysis requested — SpO2: %.1f, HR: %.1f, RR: %.1f", req.spo2_pct, req.heart_rate, req.respiratory_rate)
     vitals = req.model_dump()
-    history = _build_synthetic_history(vitals)
-    obs_df = pd.DataFrame(history)
-    risk, status = predict_risk(obs_df)
+    risk, status = predict_risk_static(vitals)
     factors = _compute_explanation_from_vitals(vitals, risk)
     recs = recommend_actions(vitals)
     logger.info("[INFO] Risk analysis result: %.1f%% — %s", risk * 100, status)
@@ -1144,7 +1304,7 @@ async def risk_analyze(req: RiskAnalyzeRequest):
         'risk_status': status,
         'risk_color': get_risk_color(status),
         'risk_percentage': round(risk * 100, 1),
-        'model_version': 'RF-Calibrated-v1',
+        'model_version': 'RF-Static-v1',
         'analysis_timestamp': datetime.now().isoformat(),
         'factors': factors,
         'recommendations': recs,
@@ -1202,7 +1362,7 @@ async def risk_simulate(req: RiskSimulateRequest):
     vitals = req.model_dump()
     history = _build_synthetic_history(vitals)
     obs_df = pd.DataFrame(history)
-    risk, status = predict_risk(obs_df)
+    risk, status = predict_risk_static(vitals)
 
     state = db['simulator_state'][patient_id]
     prev_risk = p['risk_probability']

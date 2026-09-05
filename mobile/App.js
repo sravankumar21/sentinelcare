@@ -11,6 +11,7 @@ import Simulator from './src/screens/Simulator';
 import RiskAnalyzer from './src/screens/RiskAnalyzer';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/services/api';
+import ErrorBoundary from './src/components/ErrorBoundary';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -23,7 +24,6 @@ Notifications.setNotificationHandler({
 
 async function registerForPushNotificationsAsync() {
   if (Platform.OS === 'android') {
-    // Expo Go cannot init the native FCM token; only a real EAS build can.
     try {
       await Notifications.setNotificationChannelAsync('deterioration', {
         name: 'Deterioration alerts',
@@ -43,9 +43,21 @@ async function registerForPushNotificationsAsync() {
     }
     if (finalStatus !== 'granted') return null;
 
-    // Register the native device (FCM) token with the backend so it can push
-    // directly through Firebase Cloud Messaging.
-    const { data: token } = await Notifications.getDevicePushTokenAsync();
+    // Prefer the Expo push token: it works in Expo Go AND native builds via
+    // the free Expo push service (no Firebase needed). Falls back to the raw
+    // device token (FCM/APNs) for native EAS builds.
+    let token = null;
+    try {
+      const { data } = await Notifications.getExpoPushTokenAsync({
+        projectId: '08ad090c-eded-4631-9e7f-85f6a73c51c4',
+      });
+      token = data;
+    } catch (e) {
+      try {
+        const { data } = await Notifications.getDevicePushTokenAsync();
+        token = data;
+      } catch (e2) {}
+    }
     if (token) {
       api.registerDevice(token, Platform.OS).catch(() => {});
     }
@@ -61,7 +73,7 @@ function AppNavigator() {
   const { colors } = useTheme();
   const navTheme = {
     ...DefaultTheme,
-    dark: colors.bg === '#0a0e1a',
+    dark: false,
     colors: {
       ...DefaultTheme.colors,
       background: colors.bg,
@@ -105,6 +117,57 @@ function Disclaimer() {
   );
 }
 
+let seenAlertIds = new Set();
+
+async function notifyForAlert(alert) {
+  if (!alert || alert.status !== 'PENDING' || seenAlertIds.has(`alert-${alert.alert_id}`)) return;
+  seenAlertIds.add(`alert-${alert.alert_id}`);
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: `🚨 Deterioration alert — ${alert.bed} (Ward ${alert.ward})`,
+        body: `Risk ${Math.round(alert.risk_probability * 100)}%. Clinical review recommended.`,
+        sound: true,
+        data: { alert_id: alert.alert_id, patient_id: alert.patient_id },
+      },
+      trigger: null,
+    });
+  } catch (e) {}
+}
+
+/**
+ * Global alert watcher: polls the backend on an interval and fires an in-app
+ * (local) notification whenever a NEW pending alert appears, no matter which
+ * screen the user is on. This is the reliable, zero-config fallback push path.
+ */
+function AlertWatcher() {
+  const firedRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const res = await api.getAlerts();
+        if (!active) return;
+        const pending = (res.alerts || []).filter(a => a.status === 'PENDING');
+        // First poll: just seed the seen-set so pre-existing alerts do NOT
+        // re-notify users every time the app opens.
+        if (!firedRef.current) {
+          firedRef.current = true;
+          pending.forEach(a => seenAlertIds.add(`alert-${a.alert_id}`));
+          return;
+        }
+        pending.forEach(notifyForAlert);
+      } catch (e) {}
+    };
+    check();
+    const interval = setInterval(check, 8000);
+    return () => { active = false; clearInterval(interval); };
+  }, []);
+
+  return null;
+}
+
 export default function App() {
   const notificationListener = useRef();
   const responseListener = useRef();
@@ -122,8 +185,11 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <StatusBar style="auto" />
-        <AppNavigator />
+        <ErrorBoundary>
+          <StatusBar style="dark" />
+          <AppNavigator />
+          <AlertWatcher />
+        </ErrorBoundary>
       </ThemeProvider>
     </SafeAreaProvider>
   );

@@ -1,13 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, RefreshControl, TouchableOpacity, StyleSheet, ActivityIndicator,
 } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
 import { PatientCard } from '../components/PatientCard';
 import { api } from '../services/api';
-import { useTheme, getStatusColor } from '../theme';
-import ThemeToggle from '../components/ThemeToggle';
-import * as Notifications from 'expo-notifications';
+import { useTheme } from '../theme';
 
 export default function CommandCenter({ navigation }) {
   const { colors } = useTheme();
@@ -18,7 +16,6 @@ export default function CommandCenter({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
-  const lastAlertCount = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -30,12 +27,6 @@ export default function CommandCenter({ navigation }) {
       setAlerts(a.alerts);
       setOffline(false);
       setLoading(false);
-
-      if (a.alerts.length > lastAlertCount.current) {
-        const newAlerts = a.alerts.slice(0, a.alerts.length - lastAlertCount.current);
-        newAlerts.forEach(showNotification);
-      }
-      lastAlertCount.current = a.alerts.length;
     } catch (e) {
       setOffline(true);
     }
@@ -46,20 +37,6 @@ export default function CommandCenter({ navigation }) {
     const interval = setInterval(refresh, 6000);
     return () => clearInterval(interval);
   }, [refresh]);
-
-  const showNotification = async (alert) => {
-    if (!alert || alert.status !== 'PENDING') return;
-    try {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `🚨 Deterioration alert — ${alert.bed}`,
-          body: `Risk ${Math.round(alert.risk_probability * 100)}%. Clinical review recommended.`,
-          sound: true,
-        },
-        trigger: null,
-      });
-    } catch (e) {}
-  };
 
   const stats = [
     { label: 'Stable', value: summary.stable ?? 0, color: '#22c55e' },
@@ -102,7 +79,6 @@ export default function CommandCenter({ navigation }) {
                 {summary.total_patients ?? 0} patients monitored · {summary.critical ?? 0} critical
               </Text>
             </View>
-            <ThemeToggle />
           </View>
           <Text style={styles.priorityText}>
             {(priority.length || 0)} patients requiring attention
@@ -146,7 +122,7 @@ export default function CommandCenter({ navigation }) {
                 <Text style={styles.alertTitle}>{a.bed} · Ward {a.ward}</Text>
                 <Text style={styles.alertMsg} numberOfLines={2}>{a.message}</Text>
                 <Text style={styles.alertTime}>
-                  {new Date(a.created_at).toLocaleTimeString()} · {a.status}
+                  {new Date(a.created_at).toLocaleTimeString()} · {a.status === 'COMPLETED' ? 'Completed' : a.status}
                 </Text>
               </View>
             </GlassCard>
@@ -155,7 +131,7 @@ export default function CommandCenter({ navigation }) {
 
         <GlassCard style={styles.quickActions}>
           <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.actionRow}>
+          <View style={styles.actionColumn}>
             <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('RiskAnalyzer')}>
               <Text style={styles.actionText}>Test Risk Analysis</Text>
             </TouchableOpacity>
@@ -201,9 +177,9 @@ const buildStyles = (colors) => StyleSheet.create({
   alertMsg: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   alertTime: { fontSize: 11, color: colors.textMuted, marginTop: 3 },
   quickActions: { padding: 16, marginTop: 10 },
-  actionRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  actionColumn: { gap: 10, marginTop: 12 },
   actionBtn: {
-    flex: 1, padding: 14, borderRadius: 12,
+    padding: 14, borderRadius: 12,
     backgroundColor: colors.chipBg, borderWidth: 1, borderColor: colors.chipBorder,
     alignItems: 'center',
   },

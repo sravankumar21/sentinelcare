@@ -25,7 +25,7 @@ export default function Alerts({ navigation }) {
   }, [refresh]);
 
   const filtered = filter === 'all' ? alerts : alerts.filter(a =>
-    filter === 'pending' ? a.status === 'PENDING' : a.status === 'ACKNOWLEDGED'
+    filter === 'pending' ? a.status === 'PENDING' : a.status === 'COMPLETED'
   );
 
   const acknowledge = async (id) => { await api.acknowledgeAlert(id); refresh(); };
@@ -39,7 +39,7 @@ export default function Alerts({ navigation }) {
         <Text style={styles.title}>Alerts</Text>
 
         <View style={styles.filters}>
-          {[{ key: 'all', label: 'All' }, { key: 'pending', label: 'Pending' }, { key: 'ack', label: 'Acknowledged' }].map(f => (
+          {[{ key: 'all', label: 'All' }, { key: 'pending', label: 'Pending' }, { key: 'completed', label: 'Completed' }].map(f => (
             <TouchableOpacity key={f.key} style={[styles.filterBtn, filter === f.key && styles.filterActive]} onPress={() => setFilter(f.key)}>
               <Text style={[styles.filterText, filter === f.key && styles.filterTextActive]}>{f.label}</Text>
             </TouchableOpacity>

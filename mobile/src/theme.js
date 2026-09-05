@@ -1,24 +1,6 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext } from 'react';
 
 export const palettes = {
-  dark: {
-    bg: '#0a0e1a',
-    bgSecondary: '#111827',
-    glass: 'rgba(17, 24, 39, 0.65)',
-    glassBorder: 'rgba(255, 255, 255, 0.08)',
-    glassShadow: 'rgba(0, 0, 0, 0.3)',
-    glowBlue: 'rgba(59,130,246,0.14)',
-    glowCyan: 'rgba(6,182,212,0.10)',
-    textPrimary: '#f1f5f9',
-    textSecondary: '#94a3b8',
-    textMuted: '#64748b',
-    accentBlue: '#3b82f6',
-    accentCyan: '#06b6d4',
-    accentIndigo: '#6366f1',
-    chipBg: 'rgba(59,130,246,0.12)',
-    chipBorder: 'rgba(59,130,246,0.25)',
-    cardBg: 'rgba(255,255,255,0.04)',
-  },
   light: {
     bg: '#eef2f7',
     bgSecondary: '#ffffff',
@@ -55,14 +37,12 @@ export const API_URL =
   (typeof process !== 'undefined' && process.env && process.env.EXPO_PUBLIC_API_URL)
   || 'https://sentinelcare-backend-ncwo.onrender.com/api';
 
-const ThemeContext = createContext({ mode: 'dark', colors: palettes.dark, toggle: () => {} });
+const ThemeContext = createContext({ mode: 'light', colors: palettes.light, toggle: () => {} });
 
 export const ThemeProvider = ({ children }) => {
-  const [mode, setMode] = useState('light');
-  const toggle = useCallback(() => setMode((m) => (m === 'dark' ? 'light' : 'dark')), []);
-  const colors = palettes[mode];
+  const colors = palettes.light;
   return (
-    <ThemeContext.Provider value={{ mode, colors, toggle }}>
+    <ThemeContext.Provider value={{ mode: 'light', colors, toggle: () => {} }}>
       {children}
     </ThemeContext.Provider>
   );
@@ -70,5 +50,5 @@ export const ThemeProvider = ({ children }) => {
 
 export const useTheme = () => useContext(ThemeContext);
 
-// Backwards-compat alias so existing render-time COLORS references still resolve to dark.
-export const COLORS = palettes.dark;
+// Backwards-compat alias so existing render-time COLORS references still resolve.
+export const COLORS = palettes.light;

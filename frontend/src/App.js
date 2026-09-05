@@ -275,7 +275,7 @@ function AlertsPage({ alerts, onAcknowledge }) {
     <div className="alerts-page fade-in">
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 20 }}>Alert Center</h2>
       <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-        {['all', 'pending', 'acknowledged'].map(f => (
+        {['all', 'pending', 'completed'].map(f => (
           <button key={f} className={`btn ${filter === f ? 'btn-primary' : 'btn-ghost'}`} onClick={() => setFilter(f)}>
             {f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
@@ -535,6 +535,30 @@ function RiskAnalyzer({ patients, onRefresh }) {
   const [simLoading, setSimLoading] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState('');
   const [errors, setErrors] = useState({});
+  const [riskyMode, setRiskyMode] = useState(false);
+
+  const RISKY_VALUES = {
+    spo2_pct: 90, heart_rate: 104, respiratory_rate: 24, temperature_c: 38.6,
+    systolic_bp: 102, diastolic_bp: 64, oxygen_flow: 8, oxygen_device: 'hfnc',
+    lactate: 3.2, wbc_count: 12, creatinine: 1.6, crp_level: 55, hemoglobin: 11.8,
+    age: 68, gender: 'M', admission_type: 'ED', comorbidity_index: 3,
+    sepsis_risk_score: 0.75, nurse_alert: 1, mobility_score: 1, baseline_risk_score: 0.5, los_hours: 48,
+  };
+  const DEFAULT_VALUES = {
+    spo2_pct: 97, heart_rate: 82, respiratory_rate: 18, temperature_c: 37.0,
+    systolic_bp: 122, diastolic_bp: 78, oxygen_flow: 0, oxygen_device: 'none',
+    lactate: 1.0, wbc_count: 8.0, creatinine: 0.9, crp_level: 5.0, hemoglobin: 13.0,
+    age: 60, gender: 'M', admission_type: 'ED', comorbidity_index: 0,
+    sepsis_risk_score: 0.1, nurse_alert: 0, mobility_score: 3.0, baseline_risk_score: 0.05, los_hours: 24,
+  };
+
+  const applyRisky = (on) => {
+    setRiskyMode(on);
+    setValues(on ? RISKY_VALUES : DEFAULT_VALUES);
+    setErrors({});
+    setResult(null);
+    setSimResult(null);
+  };
 
   const updateField = (key, val) => {
     setValues(prev => ({ ...prev, [key]: val }));
@@ -613,6 +637,12 @@ function RiskAnalyzer({ patients, onRefresh }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
         <div className="glass" style={{ padding: 24 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, cursor: 'pointer' }}>
+            <input type="checkbox" checked={riskyMode} onChange={e => applyRisky(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: '#f97316' }} />
+            <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Use Risky Values</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— auto-fill a deteriorating patient profile</span>
+          </label>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16, color: 'var(--accent-cyan)' }}>Vital Signs</div>
           {inputGroup('SpO₂', 'spo2_pct', '%')}
           {inputGroup('Heart Rate', 'heart_rate', 'bpm')}
