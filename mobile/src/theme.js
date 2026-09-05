@@ -34,8 +34,7 @@ export const getStatusColor = (status) => STATUS_COLORS[status] || '#6b7280';
 // EXPO_PUBLIC_API_URL=https://sentinelcare-backend-ncwo.onrender.com/api)
 // so native builds can target the deployed backend without code changes.
 export const API_URL =
-  (typeof process !== 'undefined' && process.env && process.env.EXPO_PUBLIC_API_URL)
-  || 'https://sentinelcare-backend-ncwo.onrender.com/api';
+  'http://192.168.31.123:8000/api';
 
 const ThemeContext = createContext({ mode: 'light', colors: palettes.light, toggle: () => {} });
 

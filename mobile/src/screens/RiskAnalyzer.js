@@ -5,8 +5,22 @@ import {
 } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
 import MonitorPanel from '../components/MonitorPanel';
+import { showSnackbar } from '../components/Snackbar';
+import { notifyForAlert } from '../services/notifications';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
+
+function explainStatus(status, pct) {
+  const s = status || 'STABLE';
+  const p = typeof pct === 'number' ? Math.round(pct) : null;
+  const base = {
+    CRITICAL: 'Very high risk — needs urgent review.',
+    HIGH: 'High risk — could worsen in 12h.',
+    WATCH: 'Elevated — needs close monitoring.',
+    STABLE: 'Low risk — vitals look healthy.',
+  }[s] || 'Risk is elevated — keep monitoring.';
+  return p === null ? base : `${base} Score ${p}% (0 = safe, 100 = critical).`;
+}
 
 const DEFAULTS = {
   spo2_pct: 97, heart_rate: 82, respiratory_rate: 18, temperature_c: 37.0,
@@ -121,6 +135,11 @@ export default function RiskAnalyzer({ navigation }) {
     try {
       const data = await api.riskSimulate(values);
       setSimResult(data);
+      if (data.new_alert && data.alert) {
+        showSnackbar(`Alert generated — Bed ${data.alert.bed} · alerting doctor…`);
+        const sent = await notifyForAlert(data.alert);
+        if (!sent) showSnackbar(`Alert raised — Bed ${data.alert.bed} · Ward ${data.alert.ward} (notifications blocked in settings)`);
+      }
     } catch (e) {}
     setSimulating(false);
   };
@@ -212,10 +231,12 @@ export default function RiskAnalyzer({ navigation }) {
             {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.analyzeBtnText}>ANALYZE RISK</Text>}
           </TouchableOpacity>
 
-          {result && (
+{result && (
             <GlassCard style={[styles.resultCard, { borderColor: `${color}44` }]}>
               <MonitorPanel result={result} />
-
+              <Text style={styles.resultNote}>
+                {explainStatus(result.risk_status, result.risk_percentage)}
+              </Text>
               <View style={styles.obsGrid}>
                 {Object.entries(result.vitals || {}).map(([k, v]) => (
                   <View key={k} style={styles.obsItem}>
@@ -227,7 +248,8 @@ export default function RiskAnalyzer({ navigation }) {
 
               {result.factors && result.factors.length > 0 && (
                 <>
-                  <Text style={styles.sectionTitle}>Model Contributors</Text>
+                  <Text style={styles.sectionTitle}>Why The Risk Is This High</Text>
+                  <Text style={styles.factorNote}>The measurements below pushed the score up the most.</Text>
                   {result.factors.map((f, i) => (
                     <View key={i} style={styles.factorRow}>
                       <View style={{ flex: 1 }}>
@@ -280,7 +302,7 @@ export default function RiskAnalyzer({ navigation }) {
             <GlassCard style={[styles.simResultCard, { borderColor: simResult.new_alert ? 'rgba(239,68,68,0.4)' : 'rgba(34,197,94,0.4)' }]}>
               {simResult.new_alert ? (
                 <>
-                  <Text style={styles.simResultTitle}>🚨 ALERT GENERATED</Text>
+                  <Text style={styles.simResultTitle}>ALERT GENERATED</Text>
                   <Text style={styles.simResultBody}>
                     Bed {simResult.alert?.bed} — Ward {simResult.alert?.ward}
                     {'\n'}Risk: {simResult.risk_percentage}%
@@ -341,6 +363,8 @@ const buildStyles = (colors) => StyleSheet.create({
   analyzeBtnText: { color: '#fff', fontWeight: '700', fontSize: 15, letterSpacing: 0.5 },
   btnDisabled: { opacity: 0.5 },
   resultCard: { padding: 20, borderWidth: 1, alignItems: 'center', marginBottom: 12 },
+  resultNote: { fontSize: 13, color: colors.textSecondary, lineHeight: 20, textAlign: 'center', marginTop: 10, marginBottom: 4 },
+  factorNote: { fontSize: 12, color: colors.textMuted, lineHeight: 18, marginBottom: 8 },
   obsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8, width: '100%' },
   obsItem: { width: '30%', alignItems: 'center', paddingVertical: 8, backgroundColor: colors.cardBg, borderRadius: 8 },
   obsLabel: { fontSize: 9, color: colors.textMuted, textTransform: 'uppercase' },

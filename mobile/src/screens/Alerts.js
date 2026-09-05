@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
 import { api } from '../services/api';
+import { showSnackbar } from '../components/Snackbar';
+import { resetNotificationMemory } from '../services/notifications';
 import { useTheme } from '../theme';
 
 export default function Alerts({ navigation }) {
@@ -10,6 +12,7 @@ export default function Alerts({ navigation }) {
   const [alerts, setAlerts] = useState([]);
   const [filter, setFilter] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -30,13 +33,37 @@ export default function Alerts({ navigation }) {
 
   const acknowledge = async (id) => { await api.acknowledgeAlert(id); refresh(); };
 
+  const clearAll = async () => {
+    if (clearing || alerts.length === 0) return;
+    setClearing(true);
+    try {
+      const r = await api.clearAlerts();
+      resetNotificationMemory();
+      refresh();
+      showSnackbar(r.message || 'All alerts cleared.');
+    } catch (e) {
+      showSnackbar('Could not clear alerts.');
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <Background>
       <ScrollView
         style={styles.container} contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.accentCyan} />}
       >
-        <Text style={styles.title}>Alerts</Text>
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>Alerts</Text>
+          <TouchableOpacity
+            style={[styles.clearBtn, (clearing || alerts.length === 0) && styles.clearBtnDisabled]}
+            onPress={clearAll}
+            disabled={clearing || alerts.length === 0}
+          >
+            <Text style={styles.clearText}>{clearing ? 'Clearing…' : 'Clear all'}</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.filters}>
           {[{ key: 'all', label: 'All' }, { key: 'pending', label: 'Pending' }, { key: 'completed', label: 'Completed' }].map(f => (
@@ -72,7 +99,7 @@ export default function Alerts({ navigation }) {
                   </View>
                   {pending && (
                     <TouchableOpacity style={styles.ackBtn} onPress={() => acknowledge(a.alert_id)}>
-                      <Text style={styles.ackText}>✓ Acknowledge</Text>
+                      <Text style={styles.ackText}>Acknowledge</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -88,7 +115,11 @@ export default function Alerts({ navigation }) {
 const buildStyles = (colors) => StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 16, paddingBottom: 40 },
-  title: { fontSize: 24, fontWeight: '800', color: colors.textPrimary, marginBottom: 16 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  title: { fontSize: 24, fontWeight: '800', color: colors.textPrimary },
+  clearBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.chipBg, borderWidth: 1, borderColor: colors.chipBorder },
+  clearBtnDisabled: { opacity: 0.4 },
+  clearText: { fontSize: 13, color: colors.accentCyan, fontWeight: '700' },
   filters: { flexDirection: 'row', gap: 8, marginBottom: 16 },
   filterBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.cardBg, borderWidth: 1, borderColor: colors.glassBorder },
   filterActive: { backgroundColor: colors.chipBg, borderColor: colors.chipBorder },

@@ -1,41 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { Background, GlassCard } from '../components/Glass';
+import { RiskMeter } from '../components/RiskMeter';
 import { api } from '../services/api';
 import { useTheme, getStatusColor } from '../theme';
 
 const RISK_LABELS = { STABLE: 'Stable', WATCH: 'Watch', HIGH: 'High Risk', CRITICAL: 'Critical Review' };
 
-function RiskSparkline({ data, color }) {
-  if (!data || data.length < 2) return null;
-  const height = 120;
-  const max = 100;
-  const min = 0;
-  const clean = data.filter(v => Number.isFinite(v)).map(v => Math.max(min, Math.min(max, v)));
-  if (clean.length < 2) return null;
-  const step = 100 / (clean.length - 1);
-  const pts = clean.map((v, i) => ({ x: i * step, y: height - ((v - min) / (max - min)) * height }));
-  return (
-    <View style={{ height, justifyContent: 'space-between', marginVertical: 8 }}>
-      {[0, 1, 2].map(r => (
-        <View key={r} style={styles.gridline} />
-      ))}
-      <View style={[StyleSheet.absoluteFill, styles.sparkline]} pointerEvents="none">
-        {pts.map((p, i) => (
-          <View key={i} style={[styles.sparkPoint, { left: `${p.x}%`, top: p.y, backgroundColor: color }]}>
-            {i < pts.length - 1 && (
-              <View style={{
-                position: 'absolute', left: 0, top: (p.y - pts[i + 1].y) / 2,
-                width: `${step}%`, height: Math.abs(p.y - pts[i + 1].y),
-                backgroundColor: color, borderRadius: 1, opacity: 0.7,
-              }} />
-            )}
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-}
+const TREND_PHRASE = {
+  'RAPIDLY INCREASING': 'getting worse fast',
+  'INCREASING': 'getting worse',
+  'DECREASING': 'improving',
+  'STABLE': 'steady',
+};
 
 export default function PatientDetail({ route, navigation }) {
   const { patientId, bed } = route.params || {};
@@ -44,7 +21,6 @@ export default function PatientDetail({ route, navigation }) {
   const [patient, setPatient] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
-  const [trajectory, setTrajectory] = useState(null);
 
   const num = (v, d = 0) => {
     if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -57,16 +33,14 @@ export default function PatientDetail({ route, navigation }) {
     let active = true;
     const load = async () => {
       try {
-        const [p, e, recs, traj] = await Promise.all([
+        const [p, e, recs] = await Promise.all([
           api.getPatient(patientId), api.getPatientExplanation(patientId),
           api.getRecommendations(patientId).catch(() => ({ recommendations: [] })),
-          api.getTrajectory(patientId).catch(() => null),
         ]);
         if (active) {
           setPatient(p);
           setExplanation(e);
           setRecommendations(recs.recommendations || []);
-          setTrajectory(traj);
         }
       } catch (e) {}
     };
@@ -89,10 +63,7 @@ export default function PatientDetail({ route, navigation }) {
 
   const color = getStatusColor(patient.risk_status);
   const riskPct = Math.round(num(patient.risk_probability) * 100);
-  const riskHistory = (patient.risk_history || []).map(v => num(v)).filter(Number.isFinite);
-  const hasTrend = riskHistory.length > 1;
-  const trajHistory = (trajectory && trajectory.risk_history) || [];
-  const sparkData = (trajHistory.length > 1 ? trajHistory : riskHistory).map(v => num(v, 0.5) * 100);
+  const trendPhrase = (rt) => TREND_PHRASE[rt] || 'steady';
 
   const v = patient.vitals || {};
   const vitals = [
@@ -124,7 +95,7 @@ export default function PatientDetail({ route, navigation }) {
             <Text style={[styles.statusText, { color }]}>{RISK_LABELS[patient.risk_status] || patient.risk_status}</Text>
           </View>
           <Text style={[styles.trend, { color }]}>
-            {patient.trend_arrow} {patient.risk_trend}
+            Risk is {trendPhrase(patient.risk_trend)}
           </Text>
         </GlassCard>
 
@@ -142,18 +113,13 @@ export default function PatientDetail({ route, navigation }) {
 
         <Text style={styles.sectionTitle}>Risk Trajectory</Text>
         <GlassCard style={styles.chartCard}>
-          {(trajHistory.length > 1 || riskHistory.length > 1) ? (
-            <RiskSparkline
-              data={sparkData}
-              color={color}
-            />
-          ) : (
-            <Text style={styles.noTrend}>Collecting more observations…</Text>
-          )}
-          <View style={styles.chartAxis}>
-            <Text style={styles.axisLabel}>0%</Text>
-            <Text style={styles.axisLabel}>100%</Text>
-          </View>
+          <Text style={styles.trajExplain}>
+            The bar shows how far this patient's risk has climbed, from low to critical. Right now it's {riskPct}% — {trendPhrase(patient.risk_trend)}.
+          </Text>
+          <RiskMeter
+            value={riskPct}
+            color={color}
+          />
         </GlassCard>
 
         <Text style={styles.sectionTitle}>Why This Patient Was Flagged</Text>
@@ -182,6 +148,7 @@ export default function PatientDetail({ route, navigation }) {
         </GlassCard>
 
         <Text style={styles.sectionTitle}>Recommended Actions</Text>
+        <Text style={styles.recIntro}>Suggested next steps for the care team — highest priority first.</Text>
         <GlassCard style={styles.recCard}>
           {sortedRecs.length > 0 ? sortedRecs.map((r, i) => (
             <View key={i} style={styles.recRow}>
@@ -201,7 +168,7 @@ export default function PatientDetail({ route, navigation }) {
         </GlassCard>
 
         <GlassCard style={styles.actionCard}>
-          <Text style={styles.actionText}>⚠ Elevated deterioration risk detected.</Text>
+          <Text style={styles.actionText}>Elevated deterioration risk detected.</Text>
           <Text style={styles.actionText}>Clinical review recommended.</Text>
         </GlassCard>
       </ScrollView>
@@ -231,12 +198,7 @@ const buildStyles = (colors) => StyleSheet.create({
   vitalValue: { fontSize: 20, fontWeight: '700', marginTop: 4 },
   vitalUnit: { fontSize: 11, color: colors.textSecondary, fontWeight: '400' },
   chartCard: { padding: 16 },
-  gridline: { height: 1, backgroundColor: 'rgba(128,128,128,0.15)', marginVertical: 0 },
-  sparkline: { width: '100%' },
-  sparkPoint: { position: 'absolute', width: 6, height: 6, borderRadius: 3, marginLeft: -3, marginTop: -3 },
-  noTrend: { color: colors.textMuted, textAlign: 'center', paddingVertical: 60, fontSize: 13 },
-  chartAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
-  axisLabel: { fontSize: 10, color: colors.textMuted },
+  trajExplain: { fontSize: 13, color: colors.textSecondary, lineHeight: 20, marginBottom: 10 },
   explainCard: { padding: 16 },
   explainNote: { fontSize: 12, color: colors.textMuted, marginBottom: 12, fontStyle: 'italic' },
   factorRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.glassBorder },
@@ -248,6 +210,7 @@ const buildStyles = (colors) => StyleSheet.create({
   actionCard: { padding: 16, marginTop: 16, borderColor: 'rgba(239,68,68,0.3)' },
   actionText: { color: '#f97316', fontSize: 14, fontWeight: '600', textAlign: 'center', lineHeight: 22 },
   recCard: { padding: 16 },
+  recIntro: { fontSize: 12, color: colors.textMuted, marginTop: 4, marginBottom: 10 },
   recRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.glassBorder, gap: 10 },
   recBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 5, minWidth: 68, alignItems: 'center' },
   recBadgeText: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },

@@ -26,6 +26,8 @@ export const api = {
   simulateReset: (patientId) => request(`/simulate/reset?patient_id=${patientId}`, { method: 'POST' }),
   getModelMetrics: () => request('/model/metrics'),
   getSystemStatus: () => request('/system/status'),
+  resetSystem: () => request('/system/reset', { method: 'POST' }),
+  clearAlerts: () => request('/system/clear-alerts', { method: 'POST' }),
   getRecommendations: (id) => request(`/patients/${id}/recommendations`),
   getTrajectory: (id) => request(`/patients/${id}/trajectory`),
   riskAnalyze: (vitals) =>

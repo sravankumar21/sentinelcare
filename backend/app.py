@@ -444,39 +444,9 @@ def init_demo_patients():
 
 
 def _generate_initial_alerts():
-    """Generate at most 2 initial alerts for the highest-risk patients above the alert threshold.
-    This prevents flooding the alerts page on first load."""
-    high_risk_patients = [
-        (pid, p) for pid, p in db['patients'].items()
-        if p['risk_probability'] >= ALERT_THRESHOLD
-    ]
-    high_risk_patients.sort(key=lambda x: x[1]['risk_probability'], reverse=True)
-    initial_alerts = high_risk_patients[:2]
-    for pid, p in initial_alerts:
-        db['alert_counter'] += 1
-        recs = recommend_actions(p['vitals'])
-        alert = {
-            'alert_id': db['alert_counter'],
-            'patient_id': int(pid),
-            'bed': p['bed'],
-            'ward': p['ward'],
-            'hospital_id': p.get('hospital_id'),
-            'hospital_name': p.get('hospital_name'),
-            'risk_probability': p['risk_probability'],
-            'previous_risk': round(p['risk_probability'] * 0.9, 4),
-            'risk_change': round(p['risk_probability'] * 0.1, 4),
-            'vitals_snapshot': p['vitals'].copy(),
-            'recommendations': recs,
-            'assigned_doctor_id': assign_doctor_to_alert({'patient_id': int(pid), 'risk_probability': p['risk_probability']}),
-            'escalated': False,
-            'status': 'PENDING',
-            'created_at': datetime.now().isoformat(),
-            'message': f"Elevated deterioration risk detected ({round(p['risk_probability']*100,1)}%). Clinical review recommended."
-        }
-        db['alerts'].append(alert)
-        state = db['simulator_state'].get(pid, {})
-        state['last_alerted_risk'] = p['risk_probability']
-        logger.info("[INFO] Initial alert generated: ALERT-%d for patient %d (%.1f%%)", db['alert_counter'], pid, p['risk_probability']*100)
+    """No initial alerts: the demo deliberately starts with an EMPTY Recent
+    Alerts section. Alerts appear only when the simulator or Test Risk
+    Analyzer creates them live during the session."""
     db['system_stats']['alerts_generated'] = len(db['alerts'])
 
 
@@ -654,7 +624,7 @@ def send_push_notification(alert: dict):
     """
     token = next(iter(db['devices'].keys()), None)
     db['system_stats']['push_sent'] += 1
-    mode = os.getenv('PUSH_MODE', 'auto')
+    mode = os.getenv('PUSH_MODE', 'log')
     if mode == 'log' or not token:
         return {"delivered": False, "mode": mode, "reason": "no device token registered or PUSH_MODE=log"}
 
@@ -1040,10 +1010,16 @@ async def simulate_step(req: SimulateStepRequest):
     # TRUE inference path on updated history, blended with the point-in-time
     # static model so a deteriorating patient decisively crosses the alert
     # threshold while stable periods keep the temporal model's behaviour.
+    prior_risk = float(p.get('risk_probability', 0.0))
     obs_df = pd.DataFrame(state['obs_df'])
     temporal_risk, _ = predict_risk(obs_df)
     static_risk, _ = predict_risk_static(new_obs)
     risk = round(max(temporal_risk, static_risk), 4)
+    # During a deterioration run, never report a risk BELOW the value already
+    # on the patient card, so the alert percentage always matches what the
+    # user clicked — the risk climbs monotonically from the displayed value.
+    if state['deteriorating']:
+        risk = max(risk, prior_risk)
     status = get_risk_status(risk)
     state['risk_history'].append(risk)
 
@@ -1064,6 +1040,7 @@ async def simulate_step(req: SimulateStepRequest):
 
     new_alert = False
     push_result = None
+    alert_payload = None
     last_alerted_risk = state.get('last_alerted_risk', 0.0)
     # Alert once per deterioration episode: when risk crosses the threshold from
     # below (or the first time the patient is flagged). A patient who recovers
@@ -1074,7 +1051,7 @@ async def simulate_step(req: SimulateStepRequest):
         db['alert_counter'] += 1
         recs = recommend_actions(p['vitals'])
         assigned_doc = assign_doctor_to_alert({'patient_id': int(req.patient_id), 'risk_probability': risk})
-        alert = {
+        alert_payload = {
             'alert_id': db['alert_counter'],
             'patient_id': int(req.patient_id),
             'bed': p['bed'],
@@ -1092,7 +1069,7 @@ async def simulate_step(req: SimulateStepRequest):
             'created_at': datetime.now().isoformat(),
             'message': f"Elevated deterioration risk detected ({round(risk*100,1)}%). Clinical review recommended."
         }
-        db['alerts'].insert(0, alert)
+        db['alerts'].insert(0, alert_payload)
         db['system_stats']['alerts_generated'] += 1
         # Escalation check: if critical volume exceeds limits, escalate unresolved alerts
         num_critical = sum(1 for x in db['patients'].values() if x.get('risk_probability', 0) >= 0.75)
@@ -1107,7 +1084,7 @@ async def simulate_step(req: SimulateStepRequest):
                     })
         state['last_alerted_risk'] = risk
         logger.info("[INFO] Alert created: ALERT-%d for patient %d (risk %.1f%%)", db['alert_counter'], req.patient_id, risk*100)
-        push_result = send_push_notification(alert)
+        push_result = send_push_notification(alert_payload)
         logger.info("[INFO] Push notification result: %s", push_result)
     db['system_stats']['observations_processed'] += 1
     _persist_state()
@@ -1121,6 +1098,7 @@ async def simulate_step(req: SimulateStepRequest):
         'trend_arrow': arrow,
         'new_alert': new_alert,
         'show_alert': new_alert,
+        'alert': alert_payload,
         'push': push_result
     }
 
@@ -1188,8 +1166,9 @@ async def get_system_status():
 @app.post("/api/system/reset")
 async def system_reset():
     """Reset the demo to a clean state: restore patients to their original pool
-    profile, clear simulator history and all alerts, and regenerate the standard
-    initial alerts. Keeps registered device tokens so notifications keep working."""
+    profile, clear simulator history and ALL alerts so the Recent Alerts
+    section starts empty. Keeps registered device tokens so notifications
+    keep working."""
     db['alerts'].clear()
     db['alert_counter'] = 0
     db['escalation_log'] = []
@@ -1210,7 +1189,89 @@ async def system_reset():
         "status": "ok",
         "patients": len(db['patients']),
         "alerts": len(db['alerts']),
-        "message": "Demo data reset. Patients restored to their original profiles and alerts regenerated."
+        "message": "Demo data reset. Patients restored to their original profiles; Recent Alerts starts empty."
+    }
+
+
+def _restore_patients(pids):
+    """Rebuild the given patients from the original demo pool so their vitals,
+    risk score, and simulator history return to the clean starting state."""
+    pool = load_real_pool()
+    by_id = {int(r['patient_id']): r for r in pool}
+    for pid in pids:
+        rec = by_id.get(pid)
+        if rec is None:
+            continue
+        old = db['patients'].get(pid)
+        if old and pid in WARDS.get(old.get('ward'), []):
+            WARDS[old['ward']].remove(pid)
+        db['patients'].pop(pid, None)
+        db['simulator_state'].pop(pid, None)
+        ward = str(rec.get('ward', 'A'))
+        bed = str(rec.get('bed', 'A101'))
+        risk = float(rec.get('risk', 0.05))
+        status = get_risk_status(risk)
+        window = rec.get('window', [])
+        vitals = rec.get('vitals', {})
+        db['patients'][pid] = {
+            'patient_id': pid,
+            'bed': bed,
+            'ward': ward,
+            'hospital_id': int(rec.get('hospital_id', 1)),
+            'assigned_doctor_id': int(rec.get('doctor_id', 0)),
+            'event': int(rec.get('event', 0)),
+            'deteriorated': bool(rec.get('event', 0)),
+            'num_obs': int(rec.get('num_obs', len(window))),
+            'age': int(rec.get('age', 60)),
+            'gender': str(rec.get('gender', 'M')),
+            'admission_type': str(rec.get('admission_type', 'ED')),
+            'comorbidity_index': int(rec.get('comorbidity_index', 0)),
+            'vitals': {
+                'heart_rate': float(vitals.get('heart_rate', 0)),
+                'respiratory_rate': float(vitals.get('respiratory_rate', 0)),
+                'spo2_pct': float(vitals.get('spo2_pct', 0)),
+                'temperature_c': float(vitals.get('temperature_c', 0)),
+                'systolic_bp': float(vitals.get('systolic_bp', 0)),
+                'diastolic_bp': float(vitals.get('diastolic_bp', 0)),
+            },
+            'risk_probability': risk,
+            'risk_status': status,
+            'last_update': datetime.now().isoformat(),
+        }
+        history = _compute_risk_history(window)
+        if not history:
+            history = [risk]
+        db['simulator_state'][pid] = {
+            'obs_df': window,
+            'next_hour': int(window[-1]['hour_from_admission']) + 1 if window else 1,
+            'risk_history': history,
+            'deteriorating': False,
+        }
+        if ward in WARDS:
+            WARDS[ward].append(pid)
+
+
+@app.post("/api/system/clear-alerts")
+async def system_clear_alerts():
+    """Clear ALL alerts and return every affected patient to their original
+    profile (vitals, risk, simulator history) — a lightweight, targeted reset
+    for the Alerts tab."""
+    affected = sorted({int(a.get('patient_id')) for a in db['alerts'] if a.get('patient_id')})
+    prev_count = len(db['alerts'])
+    if affected:
+        _restore_patients(affected)
+    db['alerts'].clear()
+    db['alert_counter'] = 0
+    db['escalation_log'] = []
+    db['system_stats']['observations_processed'] = 0
+    db['system_stats']['push_sent'] = 0
+    _persist_state()
+    logger.info("[INFO] Alerts cleared (%d alerts); %d patients restored to original state", prev_count, len(affected))
+    return {
+        "status": "ok",
+        "alerts": 0,
+        "patients_restored": len(affected),
+        "message": "All alerts cleared. Affected patients restored to their original risk profile."
     }
 
 

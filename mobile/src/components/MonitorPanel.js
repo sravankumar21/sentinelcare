@@ -152,7 +152,7 @@ export default function MonitorPanel({ result }) {
       {/* alarm banner */}
       {alarm ? (
         <Animated.View style={[styles.alarmBanner, { opacity: blink }]}>
-          <Text style={styles.alarmText}>⚠ ALARM · DETERIORATION RISK {status}</Text>
+          <Text style={styles.alarmText}>ALARM · DETERIORATION RISK {status}</Text>
         </Animated.View>
       ) : (
         <View style={styles.alarmBanner}>

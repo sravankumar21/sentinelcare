@@ -60,7 +60,7 @@ export default function CommandCenter({ navigation }) {
       >
         {offline && (
           <GlassCard style={styles.offline}>
-            <Text style={styles.offlineText}>⚠ Connection unavailable — retrying…</Text>
+            <Text style={styles.offlineText}>Connection unavailable — retrying…</Text>
           </GlassCard>
         )}
 

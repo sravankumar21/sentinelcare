@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, StatusBar, Platform } from 'react-native';
+import { View, Text, StyleSheet, StatusBar } from 'react-native';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -11,8 +11,10 @@ import Simulator from './src/screens/Simulator';
 import RiskAnalyzer from './src/screens/RiskAnalyzer';
 import { ThemeProvider, useTheme } from './src/theme';
 import { api } from './src/services/api';
+import { AlertWatcher, registerForPushNotificationsAsync } from './src/services/notifications';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import Snackbar, { showSnackbar } from './src/components/Snackbar';
+import DoctorAlert from './src/components/DoctorAlert';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -22,51 +24,6 @@ Notifications.setNotificationHandler({
     shouldSetBadge: false,
   }),
 });
-
-async function registerForPushNotificationsAsync() {
-  if (Platform.OS === 'android') {
-    try {
-      await Notifications.setNotificationChannelAsync('deterioration', {
-        name: 'Deterioration alerts',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        sound: 'default',
-      });
-    } catch (e) {}
-  }
-
-  try {
-    const { status: existing } = await Notifications.getPermissionsAsync();
-    let finalStatus = existing;
-    if (existing !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
-    }
-    if (finalStatus !== 'granted') return null;
-
-    // Prefer the Expo push token: it works in Expo Go AND native builds via
-    // the free Expo push service (no Firebase needed). Falls back to the raw
-    // device token (FCM/APNs) for native EAS builds.
-    let token = null;
-    try {
-      const { data } = await Notifications.getExpoPushTokenAsync({
-        projectId: '08ad090c-eded-4631-9e7f-85f6a73c51c4',
-      });
-      token = data;
-    } catch (e) {
-      try {
-        const { data } = await Notifications.getDevicePushTokenAsync();
-        token = data;
-      } catch (e2) {}
-    }
-    if (token) {
-      api.registerDevice(token, Platform.OS).catch(() => {});
-    }
-    return token;
-  } catch (e) {
-    return null;
-  }
-}
 
 const Stack = createNativeStackNavigator();
 
@@ -120,6 +77,7 @@ function Disclaimer() {
 }
 
 let seenAlertIds = new Set();
+let baselineAlertId = null;
 
 async function ensureDeteriorationChannel() {
   if (Platform.OS !== 'android') return;
@@ -138,51 +96,36 @@ async function notifyForAlert(alert) {
   seenAlertIds.add(`alert-${alert.alert_id}`);
   try {
     await ensureDeteriorationChannel();
+    const perm = await Notifications.getPermissionsAsync();
+    if (!perm.granted) {
+      const req = await Notifications.requestPermissionsAsync();
+      if (!req.granted) {
+        showSnackbar(`Alert for ${alert.bed} — Ward ${alert.ward} (notifications blocked in settings)`);
+        return;
+      }
+    }
     showSnackbar(`Alert created for ${alert.bed} — Ward ${alert.ward} · Notification sent`);
+    const vs = alert.vitals_snapshot || {};
+    const hr = Math.round(Number(vs.heart_rate) || 0);
+    const spo2 = Number(vs.spo2_pct);
+    const temp = Number(vs.temperature_c);
+    const pct = Math.round((alert.risk_probability || 0) * 100);
+    const vitalBits = [
+      hr ? `HR ${hr} bpm` : null,
+      Number.isFinite(spo2) ? `SpO₂ ${spo2.toFixed(1)}%` : null,
+      Number.isFinite(temp) ? `Temp ${temp.toFixed(1)}°C` : null,
+    ].filter(Boolean).join(' · ');
     await Notifications.scheduleNotificationAsync({
       content: {
-        title: `🚨 Deterioration alert — ${alert.bed} (Ward ${alert.ward})`,
-        body: `Risk ${Math.round(alert.risk_probability * 100)}%. Clinical review recommended.`,
+        title: `PATIENT ${alert.patient_id} — ${alert.risk_status || 'HIGH RISK'} ${pct}%`,
+        body: `Bed ${alert.bed} · Ward ${alert.ward}${vitalBits ? ` · ${vitalBits}` : ''}. Patient is ${(alert.risk_status || 'HIGH RISK').toLowerCase()} — clinical review and acknowledgement required now.`,
         sound: 'default',
         channelId: 'deterioration',
         data: { alert_id: alert.alert_id, patient_id: alert.patient_id },
       },
-      trigger: null,
+      trigger: { seconds: 1 },
     });
   } catch (e) {}
-}
-
-/**
- * Global alert watcher: polls the backend on an interval and fires an in-app
- * (local) notification whenever a NEW pending alert appears, no matter which
- * screen the user is on. This is the reliable, zero-config fallback push path.
- */
-function AlertWatcher() {
-  const firedRef = useRef(false);
-
-  useEffect(() => {
-    let active = true;
-    const check = async () => {
-      try {
-        const res = await api.getAlerts();
-        if (!active) return;
-        const pending = (res.alerts || []).filter(a => a.status === 'PENDING');
-        // First poll: just seed the seen-set so pre-existing alerts do NOT
-        // re-notify users every time the app opens.
-        if (!firedRef.current) {
-          firedRef.current = true;
-          pending.forEach(a => seenAlertIds.add(`alert-${a.alert_id}`));
-          return;
-        }
-        pending.forEach(notifyForAlert);
-      } catch (e) {}
-    };
-    check();
-    const interval = setInterval(check, 8000);
-    return () => { active = false; clearInterval(interval); };
-  }, []);
-
-  return null;
 }
 
 export default function App() {
@@ -191,8 +134,16 @@ export default function App() {
 
   useEffect(() => {
     registerForPushNotificationsAsync();
+    Notifications.cancelAllScheduledNotificationsAsync().catch(() => {});
     notificationListener.current = Notifications.addNotificationReceivedListener(() => {});
-    responseListener.current = Notifications.addNotificationResponseReceivedListener(() => {});
+    responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
+      const alertId = response?.notification?.request?.content?.data?.alert_id;
+      if (alertId) {
+        api.acknowledgeAlert(alertId)
+          .then(() => showSnackbar('Alert acknowledged'))
+          .catch(() => {});
+      }
+    });
     return () => {
       Notifications.removeNotificationSubscription(notificationListener.current);
       Notifications.removeNotificationSubscription(responseListener.current);
@@ -206,6 +157,7 @@ export default function App() {
           <StatusBar style="dark" />
           <AppNavigator />
           <AlertWatcher />
+          <DoctorAlert />
         </ErrorBoundary>
       </ThemeProvider>
     </SafeAreaProvider>
