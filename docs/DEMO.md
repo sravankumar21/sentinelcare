@@ -136,6 +136,129 @@ The 10-minute version, plus:
 
 ---
 
+## Bonus for teachers: "show the engine working behind the app"
+
+While you demo on the phone, a teacher may want proof that the app is **really talking to a
+server and really running models** — not playing a video. All of that is visible **live, in
+the terminal**. Here is exactly what to run and where to look.
+
+### Before you begin — the two terminals
+
+You already have two terminal windows open (see [SETUP.md](SETUP.md)):
+
+| Window | Command it runs | What it shows |
+|---|---|---|
+| **Terminal 1 — BACKEND** | `python3 -m uvicorn app:app --host 0.0.0.0 --port 8000` | **Everything important.** A line for **every network call the phone makes**, plus the **ML model predictions** happening in real time. |
+| **Terminal 2 — EXPO** | `npx expo start` | Only the dev-server / QR info. It does **not** show API calls. |
+
+> **The one terminal to watch is Terminal 1 (backend).** Every tap you make on the phone
+> shows up there as a request + model log. Make it big / on the projector.
+
+The backend logs two kinds of lines (each starts with a timestamp):
+- **Access log** — every single HTTP request the phone sends, e.g.
+  ```
+  INFO:     192.168.1.34:61234 - "GET /api/dashboard/summary HTTP/1.1" 200 OK
+  INFO:     192.168.1.34:61235 - "GET /api/patients HTTP/1.1" 200 OK
+  ```
+- **App log `[INFO] …`** — the model working. These appear when the model actually runs
+  fresh: during the **Simulator**, the **Risk Analyzer**, and alert creation. Reading a
+  patient from the dashboard does **not** re-run the model (the risk is already stored), so
+  you'll see plain access-log lines there — and `[INFO]` model lines during simulation.
+
+> **Harmless warnings you'll also see** (ignore these; they do not affect the demo):
+> on startup the feature builder may print `PerformanceWarning: DataFrame is highly
+> fragmented…`, and the static model prints `UserWarning: X does not have valid feature
+> names…`. These are cosmetic library notices, not errors. If a teacher asks, say: *"Those
+> are just Python library warnings about internal formatting — the models run correctly."*
+
+### What appears as you demo (step by step)
+
+**Start the backend** — before the app connects, Terminal 1 fills up showing the real
+models loading:
+```
+[INFO] ML model loaded successfully: RandomForestClassifier
+[INFO] Feature columns loaded: 134 features
+[INFO] Static ML model loaded: 22 features
+INFO:     Application startup complete.
+```
+Point at these and say: *"Right here you can see the two machine-learning models being
+loaded into the server — the time-series and the point-in-time model."*
+
+**Step 1 · Home screen loads** — the moment the app opens, Terminal 1 starts scrolling API
+calls as the app **polls** every few seconds:
+```
+INFO: ... - "GET /api/dashboard/summary HTTP/1.1" 200 OK   ← the risk cards
+INFO: ... - "GET /api/patients HTTP/1.1" 200 OK            ← the patient list
+INFO: ... - "GET /api/alerts HTTP/1.1" 200 OK              ← the recent-alerts feed
+```
+Say: *"The app has no data of its own — every number on screen is fetched from this server,
+live, every few seconds. Watch the requests stream in."*
+
+**Step 2 · Open a patient** — the app fetches that one patient's data plus the two
+per-patient "explain" feeds:
+```
+GET /api/patients/3360              ← the patient's vitals & risk
+GET /api/patients/3360/explanation  ← the "why flagged" factors
+GET /api/patients/3360/recommendations ← the care actions
+```
+(These are straight reads — no model log here, because the risk is already computed and
+stored. The fresh model runs are in Steps 3 and 5.)
+
+**Step 3 · Run Simulator → Create Alert (the hero moment)** — this is the most impressive
+for teachers. Everything fires in Terminal 1:
+```
+INFO: ... - "POST /api/simulate/start HTTP/1.1" 200 OK
+INFO: [INFO] Observation received — Patient: 4407, deteriorating: True
+INFO: [INFO] Model prediction: 0.0800 → STABLE
+INFO: [INFO] Model prediction: 0.2400 → WATCH
+INFO: [INFO] Model prediction: 0.5140 → HIGH
+INFO: [INFO] Alert created: ALERT-13 for patient 4407 (risk 51.4%)
+INFO: [INFO] Push notification result: {'delivered': False, 'mode': 'log', ...}
+```
+Say: *"Watch the model prediction lines — this is the machine-learning model re-running on
+every simulated hour. The risk climbs from 8% to 51% right here on the server, and the
+moment it crosses the danger line the server logs 'Alert created'. That's the **same 51%**
+you just saw flash on the phone — the log and the banner are the same event."*
+
+> **If the push line shows `'delivered': False, 'mode': 'log'`:** that's expected — push is
+> set to the safe "log only" mode by default, and the real alert you see on the phone is the
+> **in-app banner + vibration** (which doesn't depend on the push service). If a teacher
+> asks, say: *"The on-screen alarm is the primary alert; the backend push service is switched
+> to 'log only' for the demo so it doesn't depend on an internet push server."*
+
+**Step 4 · Acknowledge the alert** — tap Acknowledge in the app:
+```
+INFO: ... - "POST /api/alerts/1/acknowledge HTTP/1.1" 200 OK
+```
+
+**Step 5 · Test Risk Analysis** — type vitals and hit Analyze; here too the model runs
+fresh and logs its verdict:
+```
+INFO: [INFO] Risk analysis requested — SpO2: 90.0, HR: 104.0, RR: 24.0
+INFO: [INFO] Risk analysis result: 90.9% — CRITICAL
+```
+Say: *"Type risky values and the model scores it ~91% critical — here it is in the server
+log before it ever appears on the phone."*
+
+**Clear / Reset** — behind the scenes:
+```
+POST /api/system/clear-alerts   → "[INFO] Alerts cleared (2 alerts); 1 patients restored"
+POST /api/system/reset          → "[INFO] Demo data reset completed — patients: 16, alerts: 0"
+```
+
+### A teacher-friendly one-liner
+
+> *"The phone is just a remote screen. Every tap is a network request to this server, and
+> every risk score comes from a machine-learning model running right here in this terminal —
+> you can see the requests and the predictions happening live as we tap."*
+
+> **Pro tip:** press `Ctrl`+`C` once in Terminal 1 *after* an alert banner appears, then tap
+> refresh in the app — the app shows **"Connection unavailable — retrying"**. Restart the
+> backend and confirm it reconnects. This is a great, honest way to prove the app is
+> genuinely talking to the server. (Don't leave it stopped during the pitch!)
+
+---
+
 ## Advanced tips for a smoother demo
 
 - **Re-run safely:** to run the Simulator again after an alert, first **Clear all** in the
