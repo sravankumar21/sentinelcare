@@ -3,5 +3,5 @@ uvicorn>=0.30
 pydantic>=2.7
 pandas>=2.1
 numpy>=1.26
-scikit-learn==1.5.2
+scikit-learn>=1.9
 google-auth>=2.30
