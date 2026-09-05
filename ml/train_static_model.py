@@ -9,6 +9,7 @@ deteriorated patients.
 
 Saves: best_model_static.pkl, static_feature_columns.json, static_model_results.json
 """
+import argparse
 import json
 import os
 import pickle
@@ -50,13 +51,19 @@ def load_and_prepare():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--trees', type=int, default=300)
+    parser.add_argument('--leaf', type=int, default=2)
+    parser.add_argument('--tag', type=str, default='RandomForest-Static')
+    args = parser.parse_args()
+
     X, y = load_and_prepare()
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, stratify=y, random_state=1)
 
     t0 = time.time()
     model = RandomForestClassifier(
-        n_estimators=300,
-        min_samples_leaf=2,
+        n_estimators=args.trees,
+        min_samples_leaf=args.leaf,
         max_features='sqrt',
         n_jobs=-1,
         random_state=1,
@@ -68,7 +75,7 @@ def main():
     te_p = model.predict_proba(Xte)[:, 1]
 
     results = {
-        'model': 'RandomForest-Static-v2',
+        'model': args.tag,
         'trained_at': pd.Timestamp.now().isoformat(),
         'train_rows': int(len(Xtr)),
         'test_rows': int(len(Xte)),

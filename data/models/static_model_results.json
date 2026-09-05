@@ -1,16 +1,14 @@
 {
-  "model": "RandomForest-Static-v2",
-  "trained_at": "2026-09-04T23:17:39.285623",
+  "model": "RandomForest-Static-v3",
+  "trained_at": "2026-09-05T10:39:58.461271",
   "train_rows": 292506,
   "test_rows": 125360,
   "target_rate": 0.05405799945437054,
-  "train_time_s": 17.9,
-  "train_auc": 0.9954,
-  "test_auc": 0.9678,
-  "train_aps": 0.9228,
-  "test_aps": 0.7421,
-  "test_max_prob": 0.9538,
-  "test_rows_gt_05": 3205,
-  "n_estimators": 150,
-  "min_samples_leaf": 8
+  "train_time_s": 2.9,
+  "train_auc": 0.9947,
+  "test_auc": 0.9619,
+  "train_aps": 0.9138,
+  "test_aps": 0.7255,
+  "test_max_prob": 0.976,
+  "n_estimators": 25
 }
